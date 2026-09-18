@@ -164,6 +164,20 @@ class TestAcronymManagement:
         # Should still have only 1 acronym
         assert len(entity.acronyms) == 1
 
+    def test_lowercase_acronym_is_indexed_case_insensitively(self, registry):
+        entity = registry.create_entity("Test Entity")
+
+        registry.add_acronym_to_entity(entity.entity_id, "te")
+
+        assert registry.find_by_acronym("TE") == {entity.entity_id}
+
+    def test_duplicate_canonical_name_returns_existing_entity(self, registry):
+        first = registry.create_entity("Test Entity")
+        second = registry.create_entity(" test  entity. ")
+
+        assert second.entity_id == first.entity_id
+        assert registry.count() == 1
+
 
 class TestRegistryStats:
     """Test registry statistics and listing"""

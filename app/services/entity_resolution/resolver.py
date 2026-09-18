@@ -7,6 +7,7 @@ Resolves textual variants to canonical entities using:
 3. Fuzzy/semantic matching (secondary)
 4. Contextual clues
 """
+import re
 from typing import Optional, List, Tuple
 from difflib import SequenceMatcher
 from app.services.entity_resolution.normalizer import Normalizer
@@ -71,18 +72,28 @@ class EntityResolver:
 
         if entity_id:
             entity = self.registry.get_entity(entity_id)
-            return ResolutionResult(
-                state=ResolutionState.RESOLVED,
-                entity_id=entity_id,
-                canonical_name=entity.canonical_name if entity else None,
-                confidence=1.0,
-                reasoning="Exact normalized match",
-            )
+            if entity and self._matches_type(entity, entity_type):
+                return ResolutionResult(
+                    state=ResolutionState.RESOLVED,
+                    entity_id=entity_id,
+                    canonical_name=entity.canonical_name,
+                    confidence=1.0,
+                    reasoning="Exact normalized match",
+                )
 
         # Step 2: Try acronym matching
         acronym = self.normalizer.extract_acronym(text)
+        if not acronym:
+            normalized_acronym = normalized.upper()
+            if re.fullmatch(r"[A-Z]{2,5}", normalized_acronym):
+                acronym = normalized_acronym
+
         if acronym:
             entity_ids = self.registry.find_by_acronym(acronym)
+            entity_ids = {
+                eid for eid in (entity_ids or set())
+                if self._matches_type(self.registry.get_entity(eid), entity_type)
+            }
             if entity_ids and len(entity_ids) == 1:
                 entity_id = list(entity_ids)[0]
                 entity = self.registry.get_entity(entity_id)
@@ -120,7 +131,7 @@ class EntityResolver:
                 )
 
         # Step 4: Fuzzy matching
-        fuzzy_candidates = self._fuzzy_match(normalized)
+        fuzzy_candidates = self._fuzzy_match(normalized, entity_type)
         if fuzzy_candidates:
             if len(fuzzy_candidates) == 1 and fuzzy_candidates[0][1] >= self.fuzzy_threshold:
                 # Strong single match
@@ -149,7 +160,11 @@ class EntityResolver:
             reasoning="No matching entity found",
         )
 
-    def _fuzzy_match(self, normalized: str) -> List[Tuple[str, float]]:
+    def _fuzzy_match(
+        self,
+        normalized: str,
+        entity_type: Optional[str] = None,
+    ) -> List[Tuple[str, float]]:
         """Find similar entities using fuzzy matching.
         
         Args:
@@ -165,6 +180,8 @@ class EntityResolver:
         normalized_matching = self.normalizer.normalize_for_matching(normalized)
 
         for entity in self.registry.list_all():
+            if not self._matches_type(entity, entity_type):
+                continue
             # Compare against canonical name
             canonical_score = SequenceMatcher(
                 None,
@@ -189,3 +206,7 @@ class EntityResolver:
         # Sort by confidence descending
         candidates.sort(key=lambda x: x[1], reverse=True)
         return candidates
+
+    @staticmethod
+    def _matches_type(entity: Optional[CanonicalEntity], entity_type: Optional[str]) -> bool:
+        return entity is not None and (entity_type is None or entity.entity_type == entity_type)

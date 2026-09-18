@@ -4,6 +4,7 @@ Backlink Engine - Entity mention extraction from prose
 import re
 from typing import List, Set, Tuple
 from app.services.entity_resolution.normalizer import Normalizer
+from app.services.queue_manager import EntityQueue
 
 
 class EntityMentionExtractor:
@@ -102,7 +103,7 @@ class EntityMentionExtractor:
 
         for mention_text, normalized, start, end in mentions:
             # Skip if already a wikilink
-            if backlinked[start:end].startswith("[["):
+            if backlinked[start + offset:end + offset].startswith("[["):
                 continue
 
             # Resolve mention
@@ -126,13 +127,14 @@ class EntityMentionExtractor:
 class BacklinkGenerator:
     """Generate backlinks for entity-bearing fields and prose."""
 
-    def __init__(self, resolver):
+    def __init__(self, resolver, queue: EntityQueue = None):
         """Initialize with resolver.
         
         Args:
             resolver: EntityResolver instance
         """
         self.resolver = resolver
+        self.queue = queue
         self.extractor = EntityMentionExtractor()
         self.normalizer = Normalizer()
 
@@ -140,6 +142,8 @@ class BacklinkGenerator:
         self,
         value,  # str or List[str]
         field_name: str = None,
+        source_node: str = None,
+        source_context: str = None,
     ) -> str:
         """Generate backlinks for a field value.
         
@@ -151,13 +155,13 @@ class BacklinkGenerator:
             Backlinked value
         """
         if isinstance(value, list):
-            return self._backlink_list(value)
+            return self._backlink_list(value, field_name, source_node, source_context)
         elif isinstance(value, str):
-            return self._backlink_string(value)
+            return self._backlink_string(value, field_name, source_node, source_context)
         else:
             return str(value)
 
-    def _backlink_string(self, text: str) -> str:
+    def _backlink_string(self, text: str, field_name=None, source_node=None, source_context=None) -> str:
         """Generate backlinks for a string.
         
         Args:
@@ -185,11 +189,12 @@ class BacklinkGenerator:
                 backlinked.append(f"[[{result.canonical_name}]]")
             else:
                 # Keep original if unresolved
+                self._queue_unresolved(entity_text, source_node, field_name, source_context)
                 backlinked.append(entity_text)
 
         return " ".join(backlinked)
 
-    def _backlink_list(self, items: List[str]) -> str:
+    def _backlink_list(self, items: List[str], field_name=None, source_node=None, source_context=None) -> str:
         """Generate backlinks for a list of entities.
         
         Args:
@@ -219,6 +224,7 @@ class BacklinkGenerator:
                 # Keep unresolved, deduplicate on normalized
                 normalized = self.normalizer.normalize(item)
                 if normalized not in seen:
+                    self._queue_unresolved(item, source_node, field_name, source_context)
                     backlinked.append(item)
                     seen.add(normalized)
 
@@ -227,6 +233,8 @@ class BacklinkGenerator:
     def backlink_summary(
         self,
         summary: str,
+        source_node: str = None,
+        source_field: str = None,
     ) -> Tuple[str, List[Tuple[str, str, float]]]:
         """Generate backlinks for summary text.
         
@@ -236,4 +244,24 @@ class BacklinkGenerator:
         Returns:
             (backlinked_summary, resolved_entities)
         """
-        return self.extractor.extract_and_backlink(summary, self.resolver)
+        result = self.extractor.extract_and_backlink(summary, self.resolver)
+        if self.queue is not None:
+            for mention_text, _, start, end in self.extractor.extract_mentions(summary):
+                resolution = self.resolver.resolve(mention_text)
+                if resolution.state.value == "NEW_ENTITY":
+                    self._queue_unresolved(
+                        mention_text,
+                        source_node,
+                        source_field,
+                        summary[max(0, start - 80):min(len(summary), end + 80)],
+                    )
+        return result
+
+    def _queue_unresolved(self, name, source_node, source_field, source_context):
+        if self.queue is not None:
+            self.queue.enqueue(
+                canonical_name=name,
+                source_node=source_node,
+                source_field=source_field,
+                source_context=source_context,
+            )

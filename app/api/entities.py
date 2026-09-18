@@ -1,24 +1,23 @@
 """
 API routes for entities
 """
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+from app.api.dependencies import get_registry, get_resolver
 from app.models import EntityResolveRequest, EntityResolveResponse, EntityCreateRequest, EntityCreateResponse
-from app.services.entity_resolution.registry import EntityRegistry, ResolutionState
+from app.services.entity_resolution.registry import EntityRegistry
 from app.services.entity_resolution.resolver import EntityResolver
 from app.logging import logger
 
 router = APIRouter(prefix="/entities", tags=["entities"])
 
-# Global registry (TODO: move to DI)
-_registry = EntityRegistry()
-_resolver = EntityResolver(_registry)
-
-
 @router.post("/resolve", response_model=EntityResolveResponse)
-async def resolve_entity(request: EntityResolveRequest) -> EntityResolveResponse:
+async def resolve_entity(
+    request: EntityResolveRequest,
+    resolver: EntityResolver = Depends(get_resolver),
+) -> EntityResolveResponse:
     """Resolve entity name to canonical entity."""
     try:
-        result = _resolver.resolve(
+        result = resolver.resolve(
             text=request.text,
             entity_type=request.entity_type,
             context=request.context,
@@ -36,10 +35,13 @@ async def resolve_entity(request: EntityResolveRequest) -> EntityResolveResponse
 
 
 @router.post("/create", response_model=EntityCreateResponse)
-async def create_entity(request: EntityCreateRequest) -> EntityCreateResponse:
+async def create_entity(
+    request: EntityCreateRequest,
+    registry: EntityRegistry = Depends(get_registry),
+) -> EntityCreateResponse:
     """Create new canonical entity."""
     try:
-        entity = _registry.create_entity(
+        entity = registry.create_entity(
             canonical_name=request.canonical_name,
             entity_type=request.entity_type,
             acronyms=request.acronyms,
@@ -57,9 +59,9 @@ async def create_entity(request: EntityCreateRequest) -> EntityCreateResponse:
 
 
 @router.get("/status")
-async def entity_status():
+async def entity_status(registry: EntityRegistry = Depends(get_registry)):
     """Get registry status."""
     return {
-        "total_entities": _registry.count(),
+        "total_entities": registry.count(),
         "status": "ok",
     }

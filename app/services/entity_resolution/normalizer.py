@@ -33,10 +33,11 @@ class Normalizer:
         self.html_entities = re.compile(r"&[a-zA-Z]+;")
         self.parenthetical_pattern = re.compile(r"\(([^)]+)\)")
         self.dash_pattern = re.compile(r"[-–—]{1,}")
-        self.quote_pattern = re.compile(r'["\"\"\'\'\']')
+        self.quote_pattern = re.compile(r'["“”]')
+        self.apostrophe_pattern = re.compile(r"['’ʼ]")
         self.punctuation_pattern = re.compile(r"[.,;:!?]+$")
-        self.acronym_pattern = re.compile(r"\b[A-Z]{2,}\b")
-        self.possessive_pattern = re.compile(r"'s\b")
+        self.acronym_pattern = re.compile(r"\b[A-Za-z]{2,5}\b")
+        self.possessive_pattern = re.compile(r"(?:'|’|ʼ)s\b", re.IGNORECASE)
 
     def normalize(self, text: str) -> str:
         """Normalize entity name to canonical form.
@@ -50,17 +51,19 @@ class Normalizer:
         if not text or not isinstance(text, str):
             return ""
 
+        # Decode HTML entities before Unicode normalization so entity-decoded text
+        # is normalized consistently with literal accented text.
+        text = self._decode_html_entities(text)
+
         # Unicode normalization (decompose accents)
         text = unicodedata.normalize(self.UNICODE_FORM, text)
-
-        # Decode HTML entities
-        text = self._decode_html_entities(text)
 
         # Normalize dashes to single hyphen
         text = self.dash_pattern.sub("-", text)
 
-        # Normalize quotes to double quotes
-        text = self.quote_pattern.sub('"', text)
+        # Remove outer quote wrappers without stripping the apostrophe from possessives.
+        text = text.strip(" \"“”‘’'")
+        text = self.quote_pattern.sub("", text)
 
         # Remove possessives
         text = self.possessive_pattern.sub("", text)
@@ -91,9 +94,10 @@ class Normalizer:
             Normalized text for matching
         """
         text = self.normalize(text)
-        # Remove all dashes and quotes
+        # Remove all dashes and quotes while keeping spaces stable.
         text = text.replace("-", " ")
-        text = text.replace('"', "")
+        text = self.quote_pattern.sub("", text)
+        text = self.apostrophe_pattern.sub("", text)
         # Collapse whitespace
         text = self.multiple_spaces.sub(" ", text)
         return text.strip()
@@ -119,15 +123,17 @@ class Normalizer:
         # Check for explicit parenthetical acronym
         matches = self.parenthetical_pattern.findall(text)
         for match in matches:
-            normalized_match = match.strip().upper()
-            # If it looks like an acronym
-            if re.match(r"^[A-Z]{2,}$", normalized_match):
-                return normalized_match
+            normalized_match = match.strip()
+            if re.fullmatch(r"[A-Z]{2,5}", normalized_match.upper()):
+                return normalized_match.upper()
 
-        # Look for standalone acronym at word boundaries
+        # Look for standalone uppercase acronyms at word boundaries. Lowercase
+        # inputs should be resolved against the registry as acronym candidates
+        # rather than treated as arbitrary words.
         acronyms = self.acronym_pattern.findall(text)
-        if acronyms:
-            return acronyms[0].upper()
+        for acronym in acronyms:
+            if acronym.isupper():
+                return acronym.upper()
 
         return None
 
@@ -188,7 +194,9 @@ class Normalizer:
             True if text looks like acronym
         """
         text = text.strip().upper()
-        return bool(re.match(r"^[A-Z]{2,}$", text))
+        if len(text) < 2 or len(text) > 5:
+            return False
+        return bool(re.fullmatch(r"[A-Z]{2,5}", text))
 
     def split_name_and_acronym(self, text: str) -> Tuple[str, Optional[str]]:
         """Split text into name and acronym components.
@@ -210,7 +218,21 @@ class Normalizer:
         # Extract parenthetical content
         parentheticals = self.extract_parenthetical(text)
         if not parentheticals:
-            return self.normalize(text), None
+            acronym = self.extract_acronym(text)
+            if acronym:
+                remainder = self.normalize(text.replace(acronym, ""))
+                return (remainder.strip(), acronym)
+            normalized = self.normalize(text)
+            generated = self.generate_acronym(normalized)
+            return normalized, generated
+
+        # Detect prefix acronym form like "ZERA (Full Name)" before evaluating
+        # the parenthetical content itself.
+        prefix_match = re.match(r"^\s*([A-Za-z]{2,5})\s*\((.+)\)\s*$", text, flags=re.IGNORECASE)
+        if prefix_match:
+            acronym = prefix_match.group(1).upper()
+            name = self.normalize(prefix_match.group(2))
+            return name, acronym
 
         # Find acronym in parentheticals
         acronym = None
@@ -223,6 +245,12 @@ class Normalizer:
         # Remove all parentheticals to get base name
         name = self.parenthetical_pattern.sub("", text).strip()
         name = self.normalize(name)
+
+        # Prefix acronym form like "ZERA (Full Name)" leaves the acronym as the
+        # remaining text after parenthetical removal, so use the parenthetical body
+        # for the actual canonical name in that case.
+        if acronym and name and name.lower() == acronym.lower():
+            name = self.normalize(parentheticals[0])
 
         # If acronym not found in parentheticals, try to extract or generate
         if not acronym:

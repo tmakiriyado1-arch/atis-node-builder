@@ -220,6 +220,7 @@ Integration tests use these four RITA examples:
 
 ## Documentation
 
+- [docs/NORA_ARCHITECTURE.md](./docs/NORA_ARCHITECTURE.md) — implemented NORA contract and current boundaries
 - [ARCHITECTURE.md](./ARCHITECTURE.md) — System design and core principles
 - [docs/ENTITY_RESOLUTION.md](./docs/ENTITY_RESOLUTION.md) — Entity identity and resolution
 - [docs/SCHEMA.md](./docs/SCHEMA.md) — ATIS schema registry

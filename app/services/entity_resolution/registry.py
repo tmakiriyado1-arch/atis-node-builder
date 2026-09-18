@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 import uuid
 from datetime import datetime
+from app.services.entity_resolution.normalizer import Normalizer
 
 
 class ResolutionState(str, Enum):
@@ -110,6 +111,7 @@ class EntityRegistry:
         self.normalized_index: Dict[str, str] = {}  # normalized_name -> entity_id
         self.acronym_index: Dict[str, Set[str]] = {}  # acronym -> set of entity_ids
         self.next_id = 1
+        self.normalizer = Normalizer()
 
     def create_entity(
         self,
@@ -129,6 +131,11 @@ class EntityRegistry:
         Returns:
             New CanonicalEntity
         """
+        normalized_name = self.normalizer.normalize(canonical_name)
+        existing_id = self.normalized_index.get(normalized_name)
+        if existing_id:
+            return self.entities[existing_id]
+
         entity_id = f"ENTITY-{self.next_id:06d}"
         self.next_id += 1
 
@@ -136,7 +143,7 @@ class EntityRegistry:
             entity_id=entity_id,
             canonical_name=canonical_name,
             entity_type=entity_type,
-            acronyms=acronyms or [],
+            acronyms=[acronym.upper() for acronym in (acronyms or []) if acronym],
             notes=notes,
         )
 
@@ -152,17 +159,19 @@ class EntityRegistry:
         self.entities[entity.entity_id] = entity
         
         # Index canonical name
-        self.normalized_index[entity.canonical_name.lower()] = entity.entity_id
+        normalized_name = self.normalizer.normalize(entity.canonical_name)
+        self.normalized_index[normalized_name] = entity.entity_id
         
         # Index all aliases
         for alias in entity.aliases:
-            self.normalized_index[alias.normalized.lower()] = entity.entity_id
+            self.normalized_index[self.normalizer.normalize(alias.normalized)] = entity.entity_id
         
         # Index acronyms
         for acronym in entity.acronyms:
-            if acronym not in self.acronym_index:
-                self.acronym_index[acronym] = set()
-            self.acronym_index[acronym].add(entity.entity_id)
+            normalized_acronym = acronym.upper()
+            if normalized_acronym not in self.acronym_index:
+                self.acronym_index[normalized_acronym] = set()
+            self.acronym_index[normalized_acronym].add(entity.entity_id)
 
     def get_entity(self, entity_id: str) -> Optional[CanonicalEntity]:
         """Retrieve entity by ID.
@@ -184,7 +193,7 @@ class EntityRegistry:
         Returns:
             Entity ID if found, else None
         """
-        return self.normalized_index.get(normalized.lower())
+        return self.normalized_index.get(self.normalizer.normalize(normalized))
 
     def find_by_acronym(self, acronym: str) -> Optional[Set[str]]:
         """Find entity IDs by acronym.
@@ -222,7 +231,7 @@ class EntityRegistry:
             return False
         
         entity.add_alias(text, normalized, source, confidence)
-        self.normalized_index[normalized.lower()] = entity_id
+        self.normalized_index[self.normalizer.normalize(normalized)] = entity_id
         return True
 
     def add_acronym_to_entity(self, entity_id: str, acronym: str) -> bool:
@@ -240,9 +249,10 @@ class EntityRegistry:
             return False
         
         entity.add_acronym(acronym)
-        if acronym not in self.acronym_index:
-            self.acronym_index[acronym] = set()
-        self.acronym_index[acronym].add(entity_id)
+        normalized_acronym = acronym.upper()
+        if normalized_acronym not in self.acronym_index:
+            self.acronym_index[normalized_acronym] = set()
+        self.acronym_index[normalized_acronym].add(entity_id)
         return True
 
     def list_all(self) -> List[CanonicalEntity]:

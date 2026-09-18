@@ -5,6 +5,7 @@ from typing import List, Optional, Set
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+from app.services.entity_resolution.normalizer import Normalizer
 
 
 class QueueStatus(str, Enum):
@@ -62,6 +63,7 @@ class EntityQueue:
         """Initialize queue."""
         self.items: List[QueuedEntity] = []
         self.canonical_index: Set[str] = set()  # Deduplication
+        self.normalizer = Normalizer()
 
     def enqueue(
         self,
@@ -90,7 +92,7 @@ class EntityQueue:
             True if added, False if duplicate
         """
         # Normalize for dedup check
-        normalized = canonical_name.lower().strip()
+        normalized = self.normalizer.normalize(canonical_name)
         
         if normalized in self.canonical_index:
             return False

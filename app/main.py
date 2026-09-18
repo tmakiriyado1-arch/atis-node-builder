@@ -5,6 +5,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import API_TITLE, API_VERSION, API_DESCRIPTION
 from app.logging import logger
+from app.api.entities import router as entities_router
+from app.api.nodes import router as nodes_router
+from app.api.processing import router as processing_router
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -24,6 +27,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(entities_router)
+app.include_router(nodes_router)
+app.include_router(processing_router)
 
 # Health check endpoint
 @app.get("/health")

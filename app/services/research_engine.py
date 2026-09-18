@@ -83,13 +83,7 @@ class SearchProvider:
         Returns:
             List of search results
         """
-        # TODO: Implement actual search
-        # Should return list of dicts with:
-        # - url: str
-        # - title: str
-        # - snippet: str
-        # - published_date: Optional[str]
-        pass
+        raise NotImplementedError("No search provider is configured")
 
 
 class ResearchEngine:
@@ -128,7 +122,11 @@ class ResearchEngine:
         Returns:
             ResearchResult with extracted claims
         """
-        result = ResearchResult(entity_name=entity_name)
+        result = ResearchResult(entity_name=entity_name, status="failed")
+
+        # A provider contract and evidence extraction implementation are not
+        # present in this repository, so do not report a fabricated success.
+        result.error_message = "Research provider pipeline is not implemented"
 
         # TODO: Implement full research pipeline:
         # 1. Search for entity
