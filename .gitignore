@@ -156,6 +156,11 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+service-account*.json
+credentials*.json
+client-secret*.json
+*.p12
+*.pem
 
 # Spyder project settings
 .spyderproject
