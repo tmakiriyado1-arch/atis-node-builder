@@ -1,0 +1,28 @@
+name: NORA Google Auth Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  google-auth-test:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: nora-production-509012
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Verify Google authentication
+        run: |
+          gcloud auth list
+          gcloud config get-value project
