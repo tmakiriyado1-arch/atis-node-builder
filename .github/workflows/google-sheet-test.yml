@@ -1,0 +1,73 @@
+name: NORA Google Sheet Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  sheet-test:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: nora-production-509012
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Google Sheets dependencies
+        run: |
+          pip install google-api-python-client google-auth google-auth-httplib2
+
+      - name: Test private ENTITY_RAW access
+        env:
+          GOOGLE_SHEET_ID: 1C2fgbxQaU0uql-e62bmx5e06xMDnEc-hWIHvLYndI3A
+        run: |
+          python - <<'PY'
+          import os
+          import google.auth
+          from googleapiclient.discovery import build
+
+          scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+
+          credentials, project = google.auth.default(scopes=scopes)
+
+          print("Google authentication: OK")
+          print(f"Project: {project}")
+
+          service = build(
+              "sheets",
+              "v4",
+              credentials=credentials,
+              cache_discovery=False,
+          )
+
+          result = service.spreadsheets().values().get(
+              spreadsheetId=os.environ["GOOGLE_SHEET_ID"],
+              range="ENTITY_RAW!1:1",
+          ).execute()
+
+          values = result.get("values", [])
+
+          if not values:
+              raise RuntimeError("ENTITY_RAW returned no header row")
+
+          print("Spreadsheet access: OK")
+          print("Worksheet: ENTITY_RAW")
+          print("Columns:")
+
+          for column in values[0]:
+              print(f"- {column}")
+          PY
