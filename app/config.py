@@ -44,4 +44,6 @@ JOB_TIMEOUT_SECONDS = int(os.getenv("JOB_TIMEOUT_SECONDS", "3600"))
 # API
 API_TITLE = "ATIS Node Builder API"
 API_VERSION = "0.1.0"
-API_DESCRIPTION = "Infrastructure service for entity research and canonical schema population"
+API_DESCRIPTION = "Infrastructure service for entity research and canonical schema population. The frontend contract exposes persisted RITA entities and polling-based pipeline runs."
+NORA_FRONTEND_ORIGIN = os.getenv("NORA_FRONTEND_ORIGIN", "")
+NORA_FRONTEND_ORIGINS = os.getenv("NORA_FRONTEND_ORIGINS", NORA_FRONTEND_ORIGIN)
