@@ -94,8 +94,12 @@ class Normalizer:
             Normalized text for matching
         """
         text = self.normalize(text)
-        # Remove all dashes and quotes while keeping spaces stable.
+        # Strip punctuation and bracketed acronyms so parenthetical forms compare
+        # as their underlying names rather than as a different literal string.
+        text = self.parenthetical_pattern.sub(" ", text)
         text = text.replace("-", " ")
+        text = re.sub(r"[()\[\]{}<>/\\]+", " ", text)
+        text = re.sub(r"[^a-z0-9\s]", " ", text)
         text = self.quote_pattern.sub("", text)
         text = self.apostrophe_pattern.sub("", text)
         # Collapse whitespace

@@ -69,6 +69,14 @@ class EntityResolver:
         # Step 1: Normalize and try exact match
         normalized = self.normalizer.normalize(text)
         entity_id = self.registry.find_by_normalized(normalized)
+        conflicting_ids = self.registry.get_conflicting_matches(normalized)
+
+        if conflicting_ids:
+            return ResolutionResult(
+                state=ResolutionState.AMBIGUOUS,
+                candidates=[(eid, 1.0) for eid in conflicting_ids],
+                reasoning="Normalized name is shared by multiple entities; conflict requires review",
+            )
 
         if entity_id:
             entity = self.registry.get_entity(entity_id)

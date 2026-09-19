@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 from pathlib import Path
 
 from app.services.entity_resolution.registry import EntityRegistry
 from app.services.entity_resolution.resolver import EntityResolver
+from app.services.production_runner import ProductionRunner
 from app.services.queue_manager import EntityQueue
 from app.processor import NORAProcessor
 
@@ -69,6 +71,19 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_run(args: argparse.Namespace) -> int:
+    runner = ProductionRunner(output_dir=args.output, overwrite=args.overwrite)
+    summary = asyncio.run(runner.run_file(args.input, output_dir=args.output, overwrite=args.overwrite))
+    print({
+        "processed": summary.processed,
+        "succeeded": summary.succeeded,
+        "failed": summary.failed,
+        "output_dir": str(summary.output_dir) if summary.output_dir is not None else None,
+        "written_files": summary.written_files,
+    })
+    return 0 if summary.failed == 0 or summary.succeeded > 0 else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="NORA local processing CLI")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -97,6 +112,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     status_parser = subparsers.add_parser("status", help="Get NORA status summary")
     status_parser.set_defaults(func=cmd_status)
+
+    run_parser = subparsers.add_parser("run", help="Run the NORA pipeline on a RITA JSON export")
+    run_parser.add_argument("--input", required=True, help="Path to a RITA JSON export file")
+    run_parser.add_argument("--output", required=True, help="Directory to receive nodes.csv, nodes.json, and node_template.md")
+    run_parser.add_argument("--overwrite", action="store_true", help="Overwrite existing output artifacts")
+    run_parser.set_defaults(func=cmd_run)
 
     return parser
 

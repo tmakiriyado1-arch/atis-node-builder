@@ -178,6 +178,16 @@ class TestAcronymManagement:
         assert second.entity_id == first.entity_id
         assert registry.count() == 1
 
+    def test_conflicting_aliases_do_not_overwrite_entity_identity(self, registry):
+        first = registry.create_entity("Zimbabwe Energy Regulatory Authority", acronyms=["ZERA"])
+        second = registry.create_entity("ZERA Holdings", acronyms=["ZH"])
+
+        registry.add_alias_to_entity(second.entity_id, "ZERA", "zera", "source")
+
+        assert second.aliases[-1].text == "ZERA"
+        assert registry.find_by_normalized("zera") is None
+        assert registry.find_by_acronym("ZERA") == {first.entity_id}
+
 
 class TestRegistryStats:
     """Test registry statistics and listing"""

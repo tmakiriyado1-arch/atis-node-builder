@@ -109,9 +109,46 @@ class EntityRegistry:
         """Initialize empty registry."""
         self.entities: Dict[str, CanonicalEntity] = {}  # entity_id -> CanonicalEntity
         self.normalized_index: Dict[str, str] = {}  # normalized_name -> entity_id
+        self.normalized_conflicts: Dict[str, Set[str]] = {}  # normalized_name -> set of entity_ids
         self.acronym_index: Dict[str, Set[str]] = {}  # acronym -> set of entity_ids
         self.next_id = 1
         self.normalizer = Normalizer()
+
+    def _index_normalized_name(self, normalized_name: str, entity_id: str) -> None:
+        """Index a normalized name without silently overwriting another entity."""
+        normalized_key = self.normalizer.normalize(normalized_name)
+        if not normalized_key:
+            return
+
+        acronym_matches = set()
+        if self.normalizer.is_likely_acronym(normalized_key):
+            acronym_matches = self.acronym_index.get(normalized_key.upper(), set())
+
+        existing = self.normalized_index.get(normalized_key)
+        all_conflict_ids = set()
+        if existing is not None and existing != entity_id:
+            all_conflict_ids.add(existing)
+        if acronym_matches:
+            all_conflict_ids.update(acronym_matches)
+
+        if all_conflict_ids:
+            all_conflict_ids.add(entity_id)
+            self.normalized_conflicts.setdefault(normalized_key, set()).update(all_conflict_ids)
+            self.normalized_index.pop(normalized_key, None)
+            return
+
+        if existing is None:
+            self.normalized_index[normalized_key] = entity_id
+            self.normalized_conflicts.pop(normalized_key, None)
+            return
+
+        if existing == entity_id:
+            self.normalized_conflicts.pop(normalized_key, None)
+            return
+
+        conflict_ids = self.normalized_conflicts.setdefault(normalized_key, {existing})
+        conflict_ids.add(entity_id)
+        self.normalized_index.pop(normalized_key, None)
 
     def create_entity(
         self,
@@ -157,15 +194,14 @@ class EntityRegistry:
             entity: Entity to register
         """
         self.entities[entity.entity_id] = entity
-        
+
         # Index canonical name
-        normalized_name = self.normalizer.normalize(entity.canonical_name)
-        self.normalized_index[normalized_name] = entity.entity_id
-        
-        # Index all aliases
+        self._index_normalized_name(entity.canonical_name, entity.entity_id)
+
+        # Index all aliases without silently overwriting conflicting identities
         for alias in entity.aliases:
-            self.normalized_index[self.normalizer.normalize(alias.normalized)] = entity.entity_id
-        
+            self._index_normalized_name(alias.normalized, entity.entity_id)
+
         # Index acronyms
         for acronym in entity.acronyms:
             normalized_acronym = acronym.upper()
@@ -193,7 +229,17 @@ class EntityRegistry:
         Returns:
             Entity ID if found, else None
         """
-        return self.normalized_index.get(self.normalizer.normalize(normalized))
+        key = self.normalizer.normalize(normalized)
+        if key in self.normalized_conflicts:
+            return None
+        return self.normalized_index.get(key)
+
+    def get_conflicting_matches(self, normalized: str) -> List[str]:
+        """Return the entity IDs that conflict for a normalized name."""
+        key = self.normalizer.normalize(normalized)
+        if key not in self.normalized_conflicts:
+            return []
+        return sorted(self.normalized_conflicts[key])
 
     def find_by_acronym(self, acronym: str) -> Optional[Set[str]]:
         """Find entity IDs by acronym.
@@ -229,9 +275,9 @@ class EntityRegistry:
         entity = self.get_entity(entity_id)
         if not entity:
             return False
-        
+
         entity.add_alias(text, normalized, source, confidence)
-        self.normalized_index[self.normalizer.normalize(normalized)] = entity_id
+        self._index_normalized_name(normalized, entity_id)
         return True
 
     def add_acronym_to_entity(self, entity_id: str, acronym: str) -> bool:
