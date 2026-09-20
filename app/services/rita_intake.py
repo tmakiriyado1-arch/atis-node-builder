@@ -162,13 +162,13 @@ class RITAEntity:
     @staticmethod
     def _parse_metadata(value: Any, field_name: str) -> Dict[str, Any]:
         if value is None:
-            raise RITAValidationError(f"RITA row is missing required field: {field_name}")
+            return {}
         if isinstance(value, dict):
             return dict(value)
         if isinstance(value, str):
             text = value.strip()
             if not text:
-                raise RITAValidationError(f"RITA field {field_name} cannot be empty")
+                return {}
             try:
                 parsed = json.loads(text)
             except (TypeError, ValueError):
