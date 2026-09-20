@@ -41,6 +41,12 @@ MISTRAL_API_KEY=your_mistral_key
 LOG_LEVEL=INFO
 ```
 
+### RITA snapshot sync
+
+The backend consumes the committed entity snapshot at `data/rita_entities.json` for `GET /api/entities` so the Render runtime does not require live Google credentials. The GitHub Action at `.github/workflows/sync-rita-entities.yml` authenticates to Google using the repository's existing Workload Identity Federation setup, reads the configured RITA sheet, validates each row using the repository's `RITAEntity` model, and writes the deterministic JSON snapshot only when content changes.
+
+If the repository is redeployed after the JSON snapshot changes, the updated entity list is available immediately. A redeploy is required only if the hosting platform does not automatically rebuild on repo changes.
+
 ### Running the Service
 
 ```bash

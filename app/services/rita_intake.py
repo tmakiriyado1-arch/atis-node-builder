@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from app.services.google_sheets import GoogleSheetsReader
@@ -186,21 +187,92 @@ class RITAEntity:
 class RITAIntakeService:
     """Small wrapper that reads ENTITY_RAW rows and validates them into RITAEntity objects."""
 
+    DEFAULT_JSON_PATH = Path(__file__).resolve().parents[2] / "data" / "rita_entities.json"
+
     def __init__(
         self,
         reader: Optional[GoogleSheetsReader] = None,
         rows: Optional[Sequence[Mapping[str, Any]]] = None,
+        json_path: Optional[str | Path] = None,
     ) -> None:
         self.reader = reader
         self._rows = list(rows) if rows is not None else None
+        self.json_path = Path(json_path) if json_path is not None else self.DEFAULT_JSON_PATH
 
     def fetch_rows(self) -> List[Dict[str, Any]]:
-        """Return raw rows, either from an injected list or the configured Google reader."""
+        """Return rows from an injected list, the committed snapshot, or the configured Google reader."""
         if self._rows is not None:
             return [dict(row) for row in self._rows]
+
+        snapshot_path = Path(self.json_path).expanduser()
+        if snapshot_path.exists():
+            return self._read_rows_from_snapshot(snapshot_path)
+
         if self.reader is None:
-            self.reader = GoogleSheetsReader.from_env()
-        return self.reader.fetch_entity_raw_rows()
+            try:
+                self.reader = GoogleSheetsReader.from_env()
+            except Exception:
+                return []
+        try:
+            return self.reader.fetch_entity_raw_rows()
+        except Exception:
+            return []
+
+    @staticmethod
+    def _read_rows_from_snapshot(path: str | Path) -> List[Dict[str, Any]]:
+        target = Path(path).expanduser()
+        try:
+            payload = json.loads(target.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return []
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"RITA snapshot at {target} is not valid JSON") from exc
+
+        if payload is None:
+            return []
+        if isinstance(payload, dict):
+            payload = payload.get("entities", [])
+        if not isinstance(payload, list):
+            raise ValueError("RITA snapshot must be a JSON array of entity objects")
+
+        rows: List[Dict[str, Any]] = []
+        for item in payload:
+            if not isinstance(item, dict):
+                raise RITAValidationError("Every item in the RITA snapshot must be an object")
+            cleaned = dict(item)
+            if "raw_json" not in cleaned:
+                cleaned["raw_json"] = dict(cleaned)
+            rows.append(cleaned)
+        return rows
+
+    @staticmethod
+    def write_snapshot(rows: Sequence[Mapping[str, Any]], path: str | Path) -> Path:
+        """Write a deterministic, validated RITA snapshot to disk."""
+        target = Path(path).expanduser()
+        target.parent.mkdir(parents=True, exist_ok=True)
+
+        serialized_rows = []
+        for row in rows:
+            mapping = dict(row)
+            entity = RITAEntity.from_row(mapping)
+            serialized_rows.append(
+                {
+                    "entity_id": entity.entity_id,
+                    "name": entity.name,
+                    "rita_type": entity.rita_type,
+                    "aliases": entity.aliases,
+                    "metadata": entity.metadata,
+                    "source_ids": entity.source_ids,
+                    "source_count": entity.source_count,
+                    "extracted_at": entity.extracted_at,
+                    "extraction_run_id": entity.extraction_run_id,
+                    "ingestion_status": entity.ingestion_status,
+                }
+            )
+
+        payload = sorted(serialized_rows, key=lambda item: str(item.get("entity_id", "")))
+        target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        return target
 
     def get_entities(self) -> List[RITAEntity]:
         """Return all valid RITA entities available from the configured source."""

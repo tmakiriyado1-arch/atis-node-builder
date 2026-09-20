@@ -2,7 +2,9 @@ import json
 from unittest.mock import MagicMock
 
 import pytest
+from fastapi.testclient import TestClient
 
+from app.main import app
 from app.services.google_sheets import GoogleSheetsReader
 from app.services.rita_intake import (
     RITAEntity,
@@ -96,3 +98,46 @@ def test_rita_intake_model_is_testable_without_google():
 
     assert entity.entity_id == "RITA-001"
     mock_reader.fetch_entity_raw_rows.assert_not_called()
+
+
+def test_json_snapshot_loads_valid_rita_entities(tmp_path):
+    snapshot = tmp_path / "rita_entities.json"
+    snapshot.write_text(json.dumps([VALID_ROW], ensure_ascii=False), encoding="utf-8")
+
+    service = RITAIntakeService(json_path=snapshot)
+    entities = service.get_entities()
+
+    assert len(entities) == 1
+    assert entities[0].entity_id == "RITA-001"
+    assert entities[0].name == "Acme Logistics"
+
+
+def test_invalid_json_snapshot_raises_value_error(tmp_path):
+    snapshot = tmp_path / "rita_entities.json"
+    snapshot.write_text('{"not": "valid"', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="valid JSON"):
+        RITAIntakeService(json_path=snapshot).get_entities()
+
+
+def test_malformed_snapshot_schema_is_rejected(tmp_path):
+    snapshot = tmp_path / "rita_entities.json"
+    snapshot.write_text(json.dumps([{"entity_id": "RITA-001", "name": "Acme Logistics"}], ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(RITAValidationError):
+        RITAIntakeService(json_path=snapshot).get_entities()
+
+
+def test_api_entities_endpoint_reads_snapshot(monkeypatch, tmp_path):
+    snapshot = tmp_path / "rita_entities.json"
+    snapshot.write_text(json.dumps([VALID_ROW], ensure_ascii=False), encoding="utf-8")
+
+    monkeypatch.setattr("app.services.rita_intake.RITAIntakeService.DEFAULT_JSON_PATH", snapshot)
+
+    with TestClient(app) as client:
+        response = client.get("/api/entities")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["count"] == 1
+    assert payload["entities"][0]["entity_id"] == "RITA-001"
