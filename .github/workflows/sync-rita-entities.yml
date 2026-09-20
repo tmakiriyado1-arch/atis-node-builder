@@ -34,10 +34,19 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Check spreadsheet ID configuration
+        env:
+          GOOGLE_SHEETS_SPREADSHEET_ID: ${{ secrets.GOOGLE_SHEETS_SPREADSHEET_ID }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: |
+          if [ -n "${GOOGLE_SHEETS_SPREADSHEET_ID:-}" ]; then echo "GOOGLE_SHEETS_SPREADSHEET_ID present: true"; else echo "GOOGLE_SHEETS_SPREADSHEET_ID present: false"; fi
+          if [ -n "${GOOGLE_SHEET_ID:-}" ]; then echo "GOOGLE_SHEET_ID present: true"; else echo "GOOGLE_SHEET_ID present: false"; fi
+
       - name: Generate RITA snapshot
         working-directory: .
         env:
-          GOOGLE_SHEETS_SPREADSHEET_ID: ${{ vars.GOOGLE_SHEETS_SPREADSHEET_ID }}
+          GOOGLE_SHEETS_SPREADSHEET_ID: ${{ secrets.GOOGLE_SHEETS_SPREADSHEET_ID }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
           GOOGLE_SHEETS_WORKSHEET_NAME: ENTITY_RAW
         run: |
           python scripts/sync_rita_entities.py
