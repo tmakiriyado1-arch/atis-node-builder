@@ -65,7 +65,7 @@ class RITAEntity:
 
         blank_fields = [
             field_name
-            for field_name in ("entity_id", "name", "rita_type", "extracted_at", "extraction_run_id", "ingestion_status")
+            for field_name in ("entity_id", "name", "rita_type", "extracted_at", "ingestion_status")
             if isinstance(mapping.get(field_name), str) and not str(mapping.get(field_name)).strip()
         ]
         if blank_fields:
