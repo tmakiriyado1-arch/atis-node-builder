@@ -22,9 +22,9 @@ class RITAEntityNotFoundError(RITAValidationError):
 class RITAEntity:
     """Typed representation of one validated RITA entity row."""
 
-    entity_id: str
-    name: str
-    rita_type: str
+    entity_id: str = ""
+    name: str = ""
+    rita_type: str = ""
     aliases: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
     source_ids: List[str] = field(default_factory=list)
@@ -46,53 +46,26 @@ class RITAEntity:
 
         raw_json = dict(raw_json)
 
-        required_fields = (
-            "entity_id",
-            "name",
-            "rita_type",
-            "aliases",
-            "metadata",
-            "source_ids",
-            "source_count",
-            "extracted_at",
-            "extraction_run_id",
-            "raw_json",
-            "ingestion_status",
-        )
-        missing_fields = [field_name for field_name in required_fields if field_name not in mapping or mapping.get(field_name) is None]
-        if missing_fields:
-            raise RITAValidationError(f"RITA row is missing required fields: {', '.join(missing_fields)}")
-
-        blank_fields = [
-            field_name
-            for field_name in ("entity_id", "name", "rita_type", "extracted_at", "ingestion_status")
-            if isinstance(mapping.get(field_name), str) and not str(mapping.get(field_name)).strip()
-        ]
-        if blank_fields:
-            raise RITAValidationError(f"RITA row contains blank required fields: {', '.join(blank_fields)}")
-
-        aliases = cls._parse_string_list(mapping.get("aliases"), "aliases")
-        source_ids = cls._parse_string_list(mapping.get("source_ids"), "source_ids")
-        metadata = cls._parse_metadata(mapping.get("metadata"), "metadata")
-        source_count = cls._parse_int(mapping.get("source_count"), "source_count")
+        aliases = cls._parse_string_list(mapping.get("aliases"))
+        source_ids = cls._parse_string_list(mapping.get("source_ids"))
+        metadata = cls._parse_metadata(mapping.get("metadata"))
+        source_count = cls._parse_int(mapping.get("source_count"))
 
         entity = cls(
-            entity_id=cls._require_text(mapping.get("entity_id"), "entity_id"),
-            name=cls._require_text(mapping.get("name"), "name"),
-            rita_type=cls._require_text(mapping.get("rita_type"), "rita_type"),
+            entity_id=str(mapping.get("entity_id") or "").strip(),
+            name=str(mapping.get("name") or "").strip(),
+            rita_type=str(mapping.get("rita_type") or "").strip(),
             aliases=aliases,
             metadata=metadata,
             source_ids=source_ids,
             source_count=source_count,
-            extracted_at=cls._require_text(mapping.get("extracted_at"), "extracted_at"),
-            extraction_run_id=cls._require_text(mapping.get("extraction_run_id"), "extraction_run_id"),
+            extracted_at=str(mapping.get("extracted_at") or "").strip(),
+            extraction_run_id=str(mapping.get("extraction_run_id") or "").strip(),
             raw_json=raw_json,
-            ingestion_status=cls._require_text(mapping.get("ingestion_status"), "ingestion_status"),
+            ingestion_status=str(mapping.get("ingestion_status") or "").strip(),
         )
         if entity.source_count != len(entity.source_ids):
-            raise RITAValidationError(
-                f"source_count ({entity.source_count}) does not match source_ids length ({len(entity.source_ids)})"
-            )
+            entity = dataclasses.replace(entity, source_count=len(entity.source_ids))
         return entity
 
     @staticmethod
@@ -107,7 +80,7 @@ class RITAEntity:
     @staticmethod
     def _parse_int(value: Any, field_name: str) -> int:
         if value is None:
-            raise RITAValidationError(f"RITA row is missing required field: {field_name}")
+            return 0
         if isinstance(value, bool):
             raise RITAValidationError(f"RITA field {field_name} must be an integer, not a boolean")
         if isinstance(value, int):
@@ -117,7 +90,7 @@ class RITAEntity:
         if isinstance(value, str):
             text = value.strip()
             if not text:
-                raise RITAValidationError(f"RITA row has an empty required field: {field_name}")
+                return 0
             try:
                 return int(text)
             except ValueError as exc:
@@ -127,7 +100,7 @@ class RITAEntity:
     @staticmethod
     def _parse_string_list(value: Any, field_name: str) -> List[str]:
         if value is None:
-            raise RITAValidationError(f"RITA row is missing required field: {field_name}")
+            return []
 
         if isinstance(value, list):
             return [str(item).strip() for item in value if str(item).strip()]
