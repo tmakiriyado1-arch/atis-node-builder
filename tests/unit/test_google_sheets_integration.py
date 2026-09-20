@@ -35,6 +35,45 @@ def test_rows_are_normalized_and_raw_json_is_preserved():
     ]
 
 
+def test_rows_are_normalized_from_human_readable_sheet_headers():
+    reader = GoogleSheetsReader(spreadsheet_id="sheet-123", worksheet_name="ENTITY_RAW")
+
+    raw_rows = [
+        [
+            "Entity ID",
+            "Name",
+            "RITA Type",
+            "Aliases",
+            "Metadata",
+            "Source IDs",
+            "Source Count",
+            "Extracted At",
+            "Extraction Run ID",
+            "Ingestion Status",
+        ],
+        [
+            "RITA-001",
+            "Acme Logistics",
+            "organization",
+            '["Acme", "Acme Logistics"]',
+            '{"country": "US"}',
+            '["src-001", "src-002"]',
+            "2",
+            "2026-01-15T12:00:00Z",
+            "run-2026-01-15",
+            "PENDING",
+        ],
+    ]
+
+    normalized = reader._normalize_rows(raw_rows)
+
+    assert normalized[0]["entity_id"] == "RITA-001"
+    assert normalized[0]["name"] == "Acme Logistics"
+    assert normalized[0]["rita_type"] == "organization"
+    assert normalized[0]["source_count"] == "2"
+    assert normalized[0]["raw_json"]["entity_id"] == "RITA-001"
+
+
 @patch.dict(
     "os.environ",
     {

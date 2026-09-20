@@ -10,6 +10,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 
+from app.logging import logger
 from app.services.pipeline import EntityPipelineService, PipelineResult
 from app.services.rita_intake import RITAIntakeService
 
@@ -199,8 +200,16 @@ async def _execute_pipeline_run(run_id: str) -> None:
 @router.get("/entities")
 async def list_ruta_entities() -> dict[str, Any]:
     """Return the available RITA entities as supported by the repository intake layer."""
+    service = RITAIntakeService()
+    diagnostics = service.get_snapshot_diagnostics()
+    logger.info(
+        "RITA snapshot diagnostics: path=%s exists=%s entity_count=%s",
+        diagnostics["snapshot_path"],
+        diagnostics["snapshot_exists"],
+        diagnostics["entity_count"],
+    )
     try:
-        entities = RITAIntakeService().get_entities()
+        entities = service.get_entities()
     except Exception:
         entities = []
 

@@ -53,6 +53,36 @@ def test_valid_rita_row_converts_correctly():
     assert entity.ingestion_status == "PENDING"
 
 
+def test_zero_source_entities_are_valid():
+    row = {
+        **VALID_ROW,
+        "source_ids": [],
+        "source_count": 0,
+        "aliases": [],
+        "metadata": {},
+        "name": "Zimbabwe Energy Regulatory Authority",
+        "entity_id": "RITA-999",
+        "raw_json": {
+            "entity_id": "RITA-999",
+            "name": "Zimbabwe Energy Regulatory Authority",
+            "rita_type": "organization",
+            "aliases": [],
+            "metadata": {},
+            "source_ids": [],
+            "source_count": 0,
+            "extracted_at": "2026-01-15T12:00:00Z",
+            "extraction_run_id": "run-2026-01-15",
+            "ingestion_status": "PENDING",
+        },
+    }
+
+    entity = RITAEntity.from_row(row)
+
+    assert entity.source_ids == []
+    assert entity.source_count == 0
+    assert entity.entity_id == "RITA-999"
+
+
 def test_entity_id_missing_fails():
     row = {**VALID_ROW, "entity_id": ""}
 

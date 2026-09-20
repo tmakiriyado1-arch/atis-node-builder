@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -143,16 +144,58 @@ class GoogleSheetsReader:
         return self._normalize_rows(rows)
 
     @staticmethod
-    def _normalize_rows(rows: List[List[str]]) -> List[Dict[str, Any]]:
+    def _canonicalize_header(header: Any) -> str:
+        raw = str(header or "").strip()
+        if not raw:
+            return ""
+
+        lowered = raw.lower()
+        lowered = lowered.replace("-", "_")
+        lowered = re.sub(r"[^a-z0-9_]+", "_", lowered)
+        lowered = re.sub(r"_+", "_", lowered).strip("_")
+
+        aliases = {
+            "entity_id": "entity_id",
+            "entityid": "entity_id",
+            "entity": "entity_id",
+            "name": "name",
+            "entity_name": "name",
+            "rita_type": "rita_type",
+            "entity_type": "rita_type",
+            "type": "rita_type",
+            "aliases": "aliases",
+            "alias": "aliases",
+            "metadata": "metadata",
+            "source_ids": "source_ids",
+            "source_id": "source_ids",
+            "source_count": "source_count",
+            "count": "source_count",
+            "extracted_at": "extracted_at",
+            "extracted": "extracted_at",
+            "extraction_run_id": "extraction_run_id",
+            "run_id": "extraction_run_id",
+            "ingestion_status": "ingestion_status",
+            "status": "ingestion_status",
+        }
+        return aliases.get(lowered, lowered)
+
+    @classmethod
+    def _normalize_rows(cls, rows: List[List[str]]) -> List[Dict[str, Any]]:
         if not rows:
             return []
 
         header_row = rows[0]
+        normalized_headers = [cls._canonicalize_header(header) for header in header_row]
         normalized: List[Dict[str, Any]] = []
 
         for row in rows[1:]:
             values = row[: len(header_row)] + [""] * max(0, len(header_row) - len(row))
-            mapping = {str(header): str(value) for header, value in zip(header_row, values)}
+            mapping: Dict[str, str] = {}
+            for header, value in zip(normalized_headers, values):
+                if header:
+                    mapping[header] = str(value)
+            if not mapping:
+                continue
             record = dict(mapping)
             record["raw_json"] = dict(mapping)
             normalized.append(record)

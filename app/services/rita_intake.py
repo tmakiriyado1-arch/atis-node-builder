@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
+from app.logging import logger
 from app.services.google_sheets import GoogleSheetsReader
 
 
@@ -129,21 +130,15 @@ class RITAEntity:
             raise RITAValidationError(f"RITA row is missing required field: {field_name}")
 
         if isinstance(value, list):
-            result = [str(item).strip() for item in value if str(item).strip()]
-            if field_name == "source_ids" and not result:
-                raise RITAValidationError(f"RITA field {field_name} cannot be empty")
-            return result
+            return [str(item).strip() for item in value if str(item).strip()]
 
         if isinstance(value, tuple):
-            result = [str(item).strip() for item in value if str(item).strip()]
-            if field_name == "source_ids" and not result:
-                raise RITAValidationError(f"RITA field {field_name} cannot be empty")
-            return result
+            return [str(item).strip() for item in value if str(item).strip()]
 
         if isinstance(value, str):
             text = value.strip()
             if not text:
-                raise RITAValidationError(f"RITA field {field_name} cannot be empty")
+                return []
             try:
                 parsed = json.loads(text)
             except (TypeError, ValueError):
@@ -199,6 +194,22 @@ class RITAIntakeService:
         self._rows = list(rows) if rows is not None else None
         self.json_path = Path(json_path) if json_path is not None else self.DEFAULT_JSON_PATH
 
+    def get_snapshot_diagnostics(self) -> Dict[str, Any]:
+        """Return a safe diagnostic summary for the committed RITA snapshot."""
+        snapshot_path = Path(self.json_path).expanduser()
+        exists = snapshot_path.exists()
+        rows: List[Dict[str, Any]] = []
+        if exists:
+            try:
+                rows = self._read_rows_from_snapshot(snapshot_path)
+            except Exception:
+                rows = []
+        return {
+            "snapshot_path": str(snapshot_path),
+            "snapshot_exists": exists,
+            "entity_count": len(rows),
+        }
+
     def fetch_rows(self) -> List[Dict[str, Any]]:
         """Return rows from an injected list, the committed snapshot, or the configured Google reader."""
         if self._rows is not None:
@@ -206,16 +217,28 @@ class RITAIntakeService:
 
         snapshot_path = Path(self.json_path).expanduser()
         if snapshot_path.exists():
-            return self._read_rows_from_snapshot(snapshot_path)
+            rows = self._read_rows_from_snapshot(snapshot_path)
+            logger.info(
+                "RITA snapshot diagnostics: path=%s exists=%s entity_count=%s",
+                snapshot_path,
+                True,
+                len(rows),
+            )
+            return rows
 
+        logger.warning("RITA snapshot missing at %s; falling back to Google Sheets", snapshot_path)
         if self.reader is None:
             try:
                 self.reader = GoogleSheetsReader.from_env()
             except Exception:
+                logger.exception("Failed to configure Google Sheets reader for RITA fallback")
                 return []
         try:
-            return self.reader.fetch_entity_raw_rows()
+            rows = self.reader.fetch_entity_raw_rows()
+            logger.info("RITA Google fallback row_count=%s", len(rows))
+            return rows
         except Exception:
+            logger.exception("Google Sheets RITA fallback failed")
             return []
 
     @staticmethod
