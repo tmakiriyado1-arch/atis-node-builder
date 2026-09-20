@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from app.services.google_sheets import GoogleSheetsReader
 from app.services.rita_intake import RITAEntity, RITAIntakeService
 
-ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_PATH = ROOT / "data" / "rita_entities.json"
 
 

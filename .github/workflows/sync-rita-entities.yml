@@ -35,6 +35,7 @@ jobs:
           pip install -r requirements.txt
 
       - name: Generate RITA snapshot
+        working-directory: .
         env:
           GOOGLE_SHEETS_SPREADSHEET_ID: ${{ vars.GOOGLE_SHEETS_SPREADSHEET_ID }}
           GOOGLE_SHEETS_WORKSHEET_NAME: ENTITY_RAW
