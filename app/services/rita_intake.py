@@ -71,10 +71,8 @@ class RITAEntity:
     @staticmethod
     def _require_text(value: Any, field_name: str) -> str:
         if value is None:
-            raise RITAValidationError(f"RITA row is missing required field: {field_name}")
+            return ""
         text = str(value).strip()
-        if not text:
-            raise RITAValidationError(f"RITA row has an empty required field: {field_name}")
         return text
 
     @staticmethod
