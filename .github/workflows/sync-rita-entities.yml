@@ -35,12 +35,12 @@ jobs:
           pip install -r requirements.txt
 
       - name: Check spreadsheet ID configuration
-        env:
-          GOOGLE_SHEETS_SPREADSHEET_ID: ${{ secrets.GOOGLE_SHEETS_SPREADSHEET_ID }}
-          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         run: |
-          if [ -n "${GOOGLE_SHEETS_SPREADSHEET_ID:-}" ]; then echo "GOOGLE_SHEETS_SPREADSHEET_ID present: true"; else echo "GOOGLE_SHEETS_SPREADSHEET_ID present: false"; fi
-          if [ -n "${GOOGLE_SHEET_ID:-}" ]; then echo "GOOGLE_SHEET_ID present: true"; else echo "GOOGLE_SHEET_ID present: false"; fi
+          if [ -n "${{ vars.GOOGLE_SHEETS_SPREADSHEET_ID }}" ]; then echo "GOOGLE_SHEETS_SPREADSHEET_ID via vars: true"; else echo "GOOGLE_SHEETS_SPREADSHEET_ID via vars: false"; fi
+          if [ -n "${{ secrets.GOOGLE_SHEETS_SPREADSHEET_ID }}" ]; then echo "GOOGLE_SHEETS_SPREADSHEET_ID via secrets: true"; else echo "GOOGLE_SHEETS_SPREADSHEET_ID via secrets: false"; fi
+          if [ -n "${{ vars.GOOGLE_SHEET_ID }}" ]; then echo "GOOGLE_SHEET_ID via vars: true"; else echo "GOOGLE_SHEET_ID via vars: false"; fi
+          if [ -n "${{ secrets.GOOGLE_SHEET_ID }}" ]; then echo "GOOGLE_SHEET_ID via secrets: true"; else echo "GOOGLE_SHEET_ID via secrets: false"; fi
+          echo "job_environment_configured: false"
 
       - name: Generate RITA snapshot
         working-directory: .
