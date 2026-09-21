@@ -25,7 +25,7 @@ class ResearchClaim:
     source_type: str = "webpage"
     confidence: float = 0.0
     extraction_method: str = "search_result"
-    extracted_at: datetime = field(default_factory=datetime.now)
+    extracted_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     subject: Optional[str] = None
     predicate: Optional[str] = None
     object: Optional[str] = None
@@ -61,7 +61,7 @@ class ResearchResult:
     claims: List[ResearchClaim] = field(default_factory=list)
     summary: str = ""
     sources_count: int = 0
-    research_completed_at: datetime = field(default_factory=datetime.now)
+    research_completed_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     status: str = "completed"
     error_message: Optional[str] = None
     evidence: List[EvidenceRecord] = field(default_factory=list)
