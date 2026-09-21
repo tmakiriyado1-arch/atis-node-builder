@@ -122,6 +122,13 @@ class ResearchEngine:
         if len(queries) >= max_queries:
             return queries[:max_queries]
 
+        # Extract meaningful tokens, handling parentheses and common abbreviations
+        import re
+        # Remove content in parentheses and split
+        base_name = re.sub(r'\([^)]*\)', '', cleaned_name).strip()
+        if base_name and base_name != cleaned_name and base_name not in queries:
+            queries.append(base_name)
+
         # Split multi-word queries into individual meaningful tokens
         # for fallback evidence retrieval
         if cleaned_name and " " in cleaned_name:
@@ -204,6 +211,7 @@ class ResearchEngine:
                     cleaned_name,
                     deduped_evidence,
                     api_key=getattr(self.llm_provider, "api_key", config.MISTRAL_API_KEY),
+                    model=getattr(self.llm_provider, "model", config.MISTRAL_MODEL),
                 )
             except Exception:
                 claims = []

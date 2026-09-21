@@ -84,6 +84,7 @@ async def enrich_evidence_with_mistral(
         "model": model or config.MISTRAL_MODEL or "mistral-large-latest",
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.0,
+        "top_p": 1.0,
         "response_format": {"type": "json_object"},
     }
 
