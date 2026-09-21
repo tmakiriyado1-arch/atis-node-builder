@@ -142,12 +142,12 @@ class RITAEntity:
                 return {}
             try:
                 parsed = json.loads(text)
+                if isinstance(parsed, dict):
+                    return parsed
+                return {"value": text}
             except (TypeError, ValueError):
                 return {"value": text}
-            if isinstance(parsed, dict):
-                return parsed
-            raise RITAValidationError(f"RITA field {field_name} must decode to a dictionary")
-        raise RITAValidationError(f"RITA field {field_name} must be a dictionary or JSON string")
+        return {}
 
 
 class RITAIntakeService:
