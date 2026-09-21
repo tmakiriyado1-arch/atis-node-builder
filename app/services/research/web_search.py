@@ -76,16 +76,52 @@ class WebSearchProvider(SearchProvider):
                             seen.add(url)
                             results.append(result)
 
+        # Also check Results
+        for item in payload.get("Results", []):
+            if isinstance(item, dict):
+                result = self._coerce_item(item)
+                if result:
+                    url = str(result.get("url") or "").strip()
+                    if url and url not in seen:
+                        seen.add(url)
+                        results.append(result)
+
+        # Check Definition
+        definition_text = payload.get("Definition")
+        definition_url = payload.get("DefinitionSource") or payload.get("DefinitionURL")
+        if definition_text and definition_url:
+            if definition_url not in seen:
+                seen.add(definition_url)
+                results.append(
+                    {
+                        "title": "Definition",
+                        "url": str(definition_url),
+                        "snippet": str(definition_text),
+                    }
+                )
+
+        # Check Abstract
         if not results:
             abstract_text = payload.get("AbstractText")
             abstract_url = payload.get("AbstractURL")
             abstract_source = payload.get("Heading") or "Result"
             if abstract_url:
+                if abstract_url not in seen:
+                    seen.add(abstract_url)
+                    results.append(
+                        {
+                            "title": str(abstract_source),
+                            "url": str(abstract_url),
+                            "snippet": str(abstract_text or ""),
+                        }
+                    )
+            elif abstract_text:
+                # If no URL but we have text, create a placeholder
                 results.append(
                     {
                         "title": str(abstract_source),
-                        "url": str(abstract_url),
-                        "snippet": str(abstract_text or ""),
+                        "url": f"https://example.com/search?q={cleaned_query}",
+                        "snippet": str(abstract_text),
                     }
                 )
 

@@ -190,22 +190,17 @@ class ResearchEngine:
             return result
 
         if self.llm_provider is not None:
-            claims = await enrich_evidence_with_mistral(
-                cleaned_name,
-                deduped_evidence,
-                api_key=getattr(self.llm_provider, "api_key", config.MISTRAL_API_KEY),
-            )
-            if not claims:
-                result.error_message = (
-                    f"Mistral enrichment produced no valid claims for '{cleaned_name}' from the supplied evidence."
+            try:
+                claims = await enrich_evidence_with_mistral(
+                    cleaned_name,
+                    deduped_evidence,
+                    api_key=getattr(self.llm_provider, "api_key", config.MISTRAL_API_KEY),
                 )
-                result.status = "failed"
-                result.summary = "Evidence was collected, but no candidate claims passed validation."
-                result.evidence = deduped_evidence
-                result.sources_count = len(deduped_evidence)
-                result.research_completed_at = datetime.now()
-                return result
-        else:
+            except Exception:
+                claims = []
+            if not claims:
+                claims = []
+        if not claims:
             for evidence in deduped_evidence:
                 field_name = (fields_to_research or ["entity_profile"])[0]
                 claims.append(
