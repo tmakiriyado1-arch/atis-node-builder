@@ -96,12 +96,12 @@ class EntityPipelineService:
             result.error_message = "No claim candidates were produced from the supplied evidence."
             return result
 
-        if result.resolution.state in {ResolutionState.AMBIGUOUS, ResolutionState.CONFLICT, ResolutionState.POSSIBLE_MATCH, ResolutionState.NEW_ENTITY}:
+        if result.resolution.state in {ResolutionState.AMBIGUOUS, ResolutionState.CONFLICT, ResolutionState.POSSIBLE_MATCH}:
             result.status = "ambiguous"
             result.error_message = result.resolution.reasoning or "Subject identity could not be resolved confidently."
             return result
 
-        if result.resolution.state != ResolutionState.RESOLVED:
+        if result.resolution.state not in {ResolutionState.RESOLVED, ResolutionState.NEW_ENTITY}:
             result.status = "failed"
             result.error_message = result.resolution.reasoning or "Subject identity resolution failed."
             return result

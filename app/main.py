@@ -14,6 +14,7 @@ from app.api.entities import router as entities_router
 from app.api.nodes import router as nodes_router
 from app.api.processing import router as processing_router
 from app.api.runs import router as runs_router
+from app.api.sync import router as sync_router
 
 
 def _cors_origins() -> list[str]:
@@ -47,6 +48,7 @@ app.include_router(entities_router)
 app.include_router(nodes_router)
 app.include_router(processing_router)
 app.include_router(runs_router)
+app.include_router(sync_router)
 
 
 @app.exception_handler(HTTPException)

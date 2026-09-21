@@ -34,6 +34,7 @@ class ClaimClassification:
     reasoning: str = ""
     resolved_target: Optional[str] = None
     raw_claim: str = ""
+    subtype: Optional[str] = None
 
     def render_relationship(self) -> str:
         if not self.predicate or not self.target:
@@ -148,6 +149,26 @@ class ClaimClassifier:
         ],
     }
 
+    _concept_entity_type_keywords = {
+        "concept": [
+            "concept",
+            "economic policy approach",
+            "policy approach",
+            "ideological framework",
+            "economic framework",
+            "political concept",
+        ],
+    }
+
+    _concept_subtype_mapping = {
+        "economic policy approach": "economic_policy",
+        "policy approach": "policy",
+        "ideological framework": "ideological_framework",
+        "economic framework": "economic_framework",
+        "political concept": "political_concept",
+        "concept": None,
+    }
+
     def __init__(self, registry: Optional[EntityRegistry] = None, resolver: Optional[EntityResolver] = None):
         self.registry = registry
         self.resolver = resolver
@@ -163,6 +184,7 @@ class ClaimClassifier:
         evidence_urls = self._evidence_urls(claim)
         subject, predicate, target = self._extract_triplet(claim, text)
         metadata_field = self._metadata_field(text, target, predicate)
+        subtype = self._extract_subtype(text, target) if metadata_field == "entity_type" else None
         if metadata_field:
             return ClaimClassification(
                 category=ClaimCategory.METADATA,
@@ -172,6 +194,7 @@ class ClaimClassifier:
                 evidence_urls=evidence_urls,
                 reasoning="metadata claim routed to canonical field",
                 raw_claim=text,
+                subtype=subtype,
             )
 
         if self._is_direct_relationship(text, predicate, target):
@@ -310,6 +333,9 @@ class ClaimClassifier:
         if re.search(r"\b(is|are)\s+(?:a|an)\s+", lower):
             if any(keyword in lower for keyword in self._metadata_keywords["entity_type"]):
                 return True
+            # Check for concept entity type patterns
+            if any(keyword in lower for keyword in self._concept_entity_type_keywords["concept"]):
+                return True
         if any(keyword in lower for keyword in ["located in", "based in", "situated in", "operates in"]):
             return True
         if any(keyword in lower for keyword in ["in the energy sector", "energy sector", "water sector", "transport sector", "technology sector"]):
@@ -322,14 +348,33 @@ class ClaimClassifier:
         lower = text.lower()
         if predicate and predicate.lower() in {"regulates", "manages", "oversees", "supports", "provides", "governs", "controls", "establishes", "requires", "enforces", "includes", "covers", "monitors", "administers", "coordinates", "maintains", "owns", "leads"}:
             return None
-        if re.search(r"\b(is|are)\s+(?:a|an)\s+", lower) and any(keyword in lower for keyword in self._metadata_keywords["entity_type"]):
-            return "entity_type"
+        if re.search(r"\b(is|are)\s+(?:a|an)\s+", lower):
+            if any(keyword in lower for keyword in self._metadata_keywords["entity_type"]):
+                return "entity_type"
+            # Check for concept entity type patterns
+            if any(keyword in lower for keyword in self._concept_entity_type_keywords["concept"]):
+                return "entity_type"
         if any(keyword in lower for keyword in ["located in", "based in", "situated in"]):
             return "country"
         if any(keyword in lower for keyword in ["operates in", "in the energy sector", "energy sector", "water sector", "transport sector", "technology sector"]):
             return "sector"
         if re.search(r"\b(active|inactive|proposed|approved|operational|closed|pending)\b", lower):
             return "status"
+        return None
+
+    def _extract_subtype(self, text: str, target: Optional[str]) -> Optional[str]:
+        """Extract subtype from concept entity type patterns."""
+        if not target:
+            return None
+        lower_target = target.lower()
+        # Check for exact match first
+        for keyword, subtype in self._concept_subtype_mapping.items():
+            if lower_target == keyword.lower():
+                return subtype
+        # Check if target contains the keyword
+        for keyword, subtype in self._concept_subtype_mapping.items():
+            if keyword.lower() in lower_target:
+                return subtype
         return None
 
     def _is_direct_relationship(self, text: str, predicate: Optional[str], target: Optional[str]) -> bool:

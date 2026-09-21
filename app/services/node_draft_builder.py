@@ -34,6 +34,8 @@ class NodeDraftBuilder:
         ))
 
         summary_parts: List[str] = []
+        explicit_summary_parts: List[str] = []
+        identity_parts: List[str] = []
         relationship_entries: List[str] = []
         association_entries: List[str] = []
         metadata: dict[str, str] = {}
@@ -46,10 +48,9 @@ class NodeDraftBuilder:
             claim_text = classification.raw_claim or self._claim_text(claim)
 
             if classification.category == "SUMMARY":
-                summary_parts.append(claim_text)
+                explicit_summary_parts.append(claim_text)
 
             elif classification.category == "RELATIONSHIP":
-                summary_parts.append(claim_text)
                 rendered = self._format_route(classification, claim_text)
                 if rendered and rendered not in seen_relationships:
                     seen_relationships.add(rendered)
@@ -65,11 +66,30 @@ class NodeDraftBuilder:
                 field = classification.metadata_field or "metadata"
                 value = classification.target or classification.raw_claim
                 if value and field not in metadata:
-                    metadata[field] = str(value).strip()
+                    # For concept entity types, normalize to "concept"
+                    if field == "entity_type" and hasattr(classification, "subtype") and classification.subtype:
+                        metadata[field] = "concept"
+                    else:
+                        metadata[field] = str(value).strip()
+                # Handle subtype from classification
+                if field == "entity_type" and hasattr(classification, "subtype") and classification.subtype:
+                    metadata["subtype"] = classification.subtype
+                # Collect identity definitions for summary
+                if field == "entity_type":
+                    identity_parts.append(str(value).strip())
 
             elif classification.category == "UNCLASSIFIED":
                 if claim_text:
                     review_entries.append(claim_text)
+
+        # Build summary: prefer explicit SUMMARY, then construct from identity + relationships
+        if explicit_summary_parts:
+            summary_parts = explicit_summary_parts
+        else:
+            # Construct substantive summary from identity and relationships
+            summary_sentence = self._build_summary_sentence(title, identity_parts, relationship_entries, valid_claims)
+            if summary_sentence:
+                summary_parts = [summary_sentence]
 
         body_lines: List[str] = []
         if summary_parts:
@@ -141,6 +161,42 @@ class NodeDraftBuilder:
             return str((claim.get("claim_text") or claim.get("claim") or "")).strip()
         return str(getattr(claim, "claim_text", getattr(claim, "claim", "") or "")).strip()
 
+    def _build_summary_sentence(self, entity: str, identity_parts: List[str], relationship_entries: List[str], claims: Sequence[ResearchClaim]) -> Optional[str]:
+        """Build a substantive summary sentence from identity and relationship claims."""
+        if not identity_parts and not relationship_entries:
+            return None
+
+        # Start with entity identity
+        parts: List[str] = [f"[[{entity}]]"]
+
+        # Add identity definition if available
+        if identity_parts:
+            # Use the first identity part (normalized)
+            identity = identity_parts[0]
+            # Clean up "a " or "an " prefix for cleaner reading
+            cleaned_identity = re.sub(r"^a\s+|^an\s+", "", identity, flags=re.IGNORECASE).strip()
+            parts.append(f"is {identity}")
+
+        # Add relationships using "that" or "and" conjunction
+        if relationship_entries:
+            # Extract just the predicate and target from relationship entries
+            relationship_phrases = []
+            for entry in relationship_entries:
+                # Parse entry format: "predicate::[[target]]" or "predicate::target"
+                if "::" in entry:
+                    predicate, target_part = entry.split("::", 1)
+                    # Remove wikilink brackets for natural language
+                    target = target_part.strip().replace("[[", "").replace("]]", "")
+                    relationship_phrases.append(f"{predicate} [[{target}]]")
+
+            if relationship_phrases:
+                if identity_parts:
+                    parts.append("that " + " and ".join(relationship_phrases))
+                else:
+                    parts.append(" " + " and ".join(relationship_phrases))
+
+        return " ".join(parts) + "."
+
     def _format_route(self, classification, claim_text: str) -> str:
         if not classification or not classification.target:
             return ""
@@ -162,8 +218,8 @@ class NodeDraftBuilder:
         if "::[[" in value and "]]" in value:
             prefix, target = value.split("::[[", 1)
             target = target.rsplit("]]", 1)[0]
-            return f"{prefix} → {target}"
+            return f"{prefix} \u2192 {target}"
         if "::" in value:
             prefix, target = value.split("::", 1)
-            return f"{prefix} → {target}"
+            return f"{prefix} \u2192 {target}"
         return value

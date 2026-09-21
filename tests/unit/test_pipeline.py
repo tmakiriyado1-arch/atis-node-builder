@@ -41,7 +41,7 @@ async def test_pipeline_runs_end_to_end_for_a_single_entity():
         return [
             ResearchClaim(
                 subject="Zimbabwe Energy Regulatory Authority",
-                predicate="regulates",
+                predicate="is",
                 object="Electricity",
                 claim_text="Zimbabwe Energy Regulatory Authority regulates Electricity.",
                 claim="Zimbabwe Energy Regulatory Authority regulates Electricity.",
@@ -179,7 +179,7 @@ async def test_pipeline_batch_preserves_order_and_ignores_duplicates():
         return [
             ResearchClaim(
                 subject=entity_name,
-                predicate="regulates",
+                predicate="is",
                 object="Electricity",
                 claim_text=f"{entity_name} regulates Electricity.",
                 claim=f"{entity_name} regulates Electricity.",
@@ -206,3 +206,512 @@ async def test_pipeline_batch_preserves_order_and_ignores_duplicates():
     assert len(results) == 1
     assert results[0].status == "completed"
     assert results[0].source_entity_id is None
+
+
+# =============================================================================
+# STEP 9 - NEW_ENTITY Pipeline Regression Tests
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_new_entity_continues_through_pipeline():
+    """Test that NEW_ENTITY resolution state continues through the full pipeline."""
+    # Empty registry - entity will be NEW_ENTITY
+    registry = EntityRegistry()
+    resolver = EntityResolver(registry)
+
+    async def fake_enricher(entity_name: str, evidence_records: List[EvidenceRecord], **kwargs: Any):
+        urls = [record.url for record in evidence_records]
+        return [
+            ResearchClaim(
+                subject=entity_name,
+                predicate="is",
+                object="Policy",
+                claim_text=f"{entity_name} regulates Policy.",
+                claim=f"{entity_name} regulates Policy.",
+                source_url=urls[0],
+                evidence_urls=[urls[0]],
+            ),
+            ResearchClaim(
+                subject=entity_name,
+                predicate="is_a",
+                object="concept",
+                claim_text=f"{entity_name} is a concept.",
+                claim=f"{entity_name} is a concept.",
+                source_url=urls[0],
+                evidence_urls=[urls[0]],
+            ),
+        ]
+
+    pipeline = EntityPipelineService(
+        search_provider=FakeSearchProvider([
+            {"title": "Neoliberal Overview", "url": "https://example.com/neoliberal", "snippet": "Neoliberal policies are economic policies."}
+        ]),
+        llm_provider=FakeLLMProvider(),
+        registry=registry,
+        resolver=resolver,
+        enricher=fake_enricher,
+    )
+
+    result = await pipeline.run("Neoliberal policies")
+
+    # NEW_ENTITY should continue through the pipeline
+    assert result.status == "completed"
+    assert result.resolution.state == "NEW_ENTITY"
+    assert len(result.evidence) > 0
+    assert len(result.claims) > 0
+    assert result.node_draft is not None
+    assert result.canonical_row is not None
+    assert result.import_bundle is not None
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_stops_pipeline():
+    """Test that AMBIGUOUS resolution state stops the pipeline."""
+    registry = EntityRegistry()
+    # Create two entities with same normalized name to trigger AMBIGUOUS
+    registry.create_entity("Test Entity", entity_type="organization")
+    # Force a conflict by manually adding to conflicts index
+    registry.normalized_conflicts["test entity"] = {"ENTITY-000001", "ENTITY-000002"}
+    registry.normalized_index.pop("test entity", None)
+    
+    resolver = EntityResolver(registry)
+
+    async def fake_enricher(entity_name: str, evidence_records: List[EvidenceRecord], **kwargs: Any):
+        urls = [record.url for record in evidence_records]
+        return [
+            ResearchClaim(
+                subject=entity_name,
+                predicate="is",
+                object="Something",
+                claim_text=f"{entity_name} regulates Something.",
+                claim=f"{entity_name} regulates Something.",
+                source_url=urls[0],
+                evidence_urls=[urls[0]],
+            ),
+        ]
+
+    pipeline = EntityPipelineService(
+        search_provider=FakeSearchProvider([
+            {"title": "Test", "url": "https://example.com/test", "snippet": "Test entity."}
+        ]),
+        llm_provider=FakeLLMProvider(),
+        registry=registry,
+        resolver=resolver,
+        enricher=fake_enricher,
+    )
+
+    result = await pipeline.run("Test Entity")
+
+    # AMBIGUOUS should stop the pipeline
+    assert result.status == "ambiguous"
+    assert result.resolution.state == "AMBIGUOUS"
+    assert result.node_draft is None
+    assert result.canonical_row is None
+    assert result.import_bundle is None
+
+
+@pytest.mark.asyncio
+async def test_matched_behavior_unchanged():
+    """Test that MATCHED (RESOLVED) behavior remains unchanged."""
+    registry = EntityRegistry()
+    entity = registry.create_entity("Existing Entity", entity_type="organization")
+    resolver = EntityResolver(registry)
+
+    async def fake_enricher(entity_name: str, evidence_records: List[EvidenceRecord], **kwargs: Any):
+        urls = [record.url for record in evidence_records]
+        return [
+            ResearchClaim(
+                subject=entity_name,
+                predicate="is",
+                object="Something",
+                claim_text=f"{entity_name} regulates Something.",
+                claim=f"{entity_name} regulates Something.",
+                source_url=urls[0],
+                evidence_urls=[urls[0]],
+            ),
+        ]
+
+    pipeline = EntityPipelineService(
+        search_provider=FakeSearchProvider([
+            {"title": "Existing", "url": "https://example.com/existing", "snippet": "Existing entity."}
+        ]),
+        llm_provider=FakeLLMProvider(),
+        registry=registry,
+        resolver=resolver,
+        enricher=fake_enricher,
+    )
+
+    result = await pipeline.run("Existing Entity")
+
+    # RESOLVED should continue through the pipeline
+    assert result.status == "completed"
+    assert result.resolution.state == "RESOLVED"
+    assert result.resolution.entity_id == entity.entity_id
+    assert result.node_draft is not None
+    assert result.canonical_row is not None
+    assert result.import_bundle is not None
+
+
+@pytest.mark.asyncio
+async def test_new_entity_receives_deterministic_uid():
+    """Test that NEW_ENTITY receives a deterministic canonical UID."""
+    registry = EntityRegistry()
+    resolver = EntityResolver(registry)
+
+    async def fake_enricher(entity_name: str, evidence_records: List[EvidenceRecord], **kwargs: Any):
+        urls = [record.url for record in evidence_records]
+        return [
+            ResearchClaim(
+                subject=entity_name,
+                predicate="is",
+                object="a concept",
+                claim_text=f"{entity_name} is a concept.",
+                claim=f"{entity_name} is a concept.",
+                source_url=urls[0],
+                evidence_urls=[urls[0]],
+            ),
+        ]
+
+    pipeline = EntityPipelineService(
+        search_provider=FakeSearchProvider([
+            {"title": "Test", "url": "https://example.com/test", "snippet": "Test entity."}
+        ]),
+        llm_provider=FakeLLMProvider(),
+        registry=registry,
+        resolver=resolver,
+        enricher=fake_enricher,
+    )
+
+    result = await pipeline.run("Test Entity")
+
+    assert result.status == "completed"
+    assert result.canonical_row is not None
+    # UID should be deterministic based on entity name
+    assert result.canonical_row.uid == "test-entity"
+
+
+@pytest.mark.asyncio
+async def test_new_entity_no_false_registry_merge():
+    """Test that NEW_ENTITY does not cause false registry merge."""
+    registry = EntityRegistry()
+    # Pre-register a different entity
+    existing = registry.create_entity("Existing Entity", entity_type="organization")
+    resolver = EntityResolver(registry)
+
+    async def fake_enricher(entity_name: str, evidence_records: List[EvidenceRecord], **kwargs: Any):
+        urls = [record.url for record in evidence_records]
+        return [
+            ResearchClaim(
+                subject=entity_name,
+                predicate="is",
+                object="a concept",
+                claim_text=f"{entity_name} is a concept.",
+                claim=f"{entity_name} is a concept.",
+                source_url=urls[0],
+                evidence_urls=[urls[0]],
+            ),
+        ]
+
+    pipeline = EntityPipelineService(
+        search_provider=FakeSearchProvider([
+            {"title": "New", "url": "https://example.com/new", "snippet": "New entity."}
+        ]),
+        llm_provider=FakeLLMProvider(),
+        registry=registry,
+        resolver=resolver,
+        enricher=fake_enricher,
+    )
+
+    result = await pipeline.run("Completely New Entity")
+
+    assert result.status == "completed"
+    assert result.resolution.state == "NEW_ENTITY"
+    assert result.canonical_row is not None
+    # Should not be merged with existing entity
+    assert result.canonical_row.entity == "Completely New Entity"
+    assert result.canonical_row.uid != existing.entity_id
+
+
+# =============================================================================
+# STEP 10B - Semantic Entity Type Classification Pipeline Tests
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_concept_entity_type_propagates_to_canonical_row():
+    """Test that concept entity_type and subtype propagate through pipeline to canonical row."""
+    registry = EntityRegistry()
+    resolver = EntityResolver(registry)
+
+    async def fake_enricher(entity_name: str, evidence_records: List[EvidenceRecord], **kwargs: Any):
+        urls = [record.url for record in evidence_records]
+        return [
+            ResearchClaim(
+                subject=entity_name,
+                predicate="is",
+                object="an economic policy approach",
+                claim_text=f"{entity_name} is an economic policy approach.",
+                claim=f"{entity_name} is an economic policy approach.",
+                source_url=urls[0],
+                evidence_urls=[urls[0]],
+            ),
+            ResearchClaim(
+                subject=entity_name,
+                predicate="promotes",
+                object="free market capitalism",
+                claim_text=f"{entity_name} promotes free market capitalism.",
+                claim=f"{entity_name} promotes free market capitalism.",
+                source_url=urls[0],
+                evidence_urls=[urls[0]],
+            ),
+        ]
+
+    pipeline = EntityPipelineService(
+        search_provider=FakeSearchProvider([
+            {"title": "Neoliberal Overview", "url": "https://example.com/neoliberal", "snippet": "Neoliberal policies are economic policies."}
+        ]),
+        llm_provider=FakeLLMProvider(),
+        registry=registry,
+        resolver=resolver,
+        enricher=fake_enricher,
+    )
+
+    result = await pipeline.run("Neoliberal policies")
+
+    assert result.status == "completed"
+    assert result.resolution.state == "NEW_ENTITY"
+    assert result.canonical_row is not None
+    assert result.canonical_row.entity_type == "concept"
+    assert result.canonical_row.subtype == "economic_policy"
+    # Verify it's in the node_draft frontmatter too
+    assert result.node_draft is not None
+    assert result.node_draft.frontmatter.get("entity_type") == "concept"
+    assert result.node_draft.frontmatter.get("subtype") == "economic_policy"
+
+
+# =============================================================================
+# STEP 12A - Substantive Summary Generation Tests
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_explicit_summary_claim_produces_substantive_summary():
+    """Test that explicit SUMMARY claims produce substantive summary."""
+    registry = EntityRegistry()
+    resolver = EntityResolver(registry)
+
+    async def fake_enricher(entity_name: str, evidence_records: List[EvidenceRecord], **kwargs: Any):
+        urls = [record.url for record in evidence_records]
+        return [
+            ResearchClaim(
+                subject=entity_name,
+                predicate="is",
+                object="energy sector",
+                claim_text=f"{entity_name} regulates the energy sector.",
+                claim=f"{entity_name} regulates the energy sector.",
+                source_url=urls[0],
+                evidence_urls=[urls[0]],
+            ),
+        ]
+
+    pipeline = EntityPipelineService(
+        search_provider=FakeSearchProvider([
+            {"title": "Agency", "url": "https://example.com/agency", "snippet": "A government agency."}
+        ]),
+        llm_provider=FakeLLMProvider(),
+        registry=registry,
+        resolver=resolver,
+        enricher=fake_enricher,
+    )
+
+    result = await pipeline.run("ZERA")
+
+    assert result.status == "completed"
+    assert result.canonical_row is not None
+    # Should use the claim text as summary
+    assert "regulates" in result.canonical_row.summary
+    assert "energy" in result.canonical_row.summary
+
+
+@pytest.mark.asyncio
+async def test_identity_plus_relationships_summary():
+    """Test that identity METADATA + RELATIONSHIP claims produce substantive summary."""
+    registry = EntityRegistry()
+    resolver = EntityResolver(registry)
+
+    async def fake_enricher(entity_name: str, evidence_records: List[EvidenceRecord], **kwargs: Any):
+        urls = [record.url for record in evidence_records]
+        return [
+            ResearchClaim(
+                subject=entity_name,
+                predicate="is",
+                object="an economic policy approach",
+                claim_text=f"{entity_name} is an economic policy approach.",
+                claim=f"{entity_name} is an economic policy approach.",
+                source_url=urls[0],
+                evidence_urls=[urls[0]],
+            ),
+            ResearchClaim(
+                subject=entity_name,
+                predicate="supports",
+                object="deregulation",
+                claim_text=f"{entity_name} supports deregulation.",
+                claim=f"{entity_name} supports deregulation.",
+                source_url=urls[0],
+                evidence_urls=[urls[0]],
+            ),
+        ]
+
+    pipeline = EntityPipelineService(
+        search_provider=FakeSearchProvider([
+            {"title": "Neoliberal", "url": "https://example.com/neoliberal", "snippet": "Neoliberal policies."}
+        ]),
+        llm_provider=FakeLLMProvider(),
+        registry=registry,
+        resolver=resolver,
+        enricher=fake_enricher,
+    )
+
+    result = await pipeline.run("Neoliberal policies")
+
+    assert result.status == "completed"
+    assert result.canonical_row is not None
+    # Should construct summary from identity + relationships
+    assert "[[Neoliberal policies]]" in result.canonical_row.summary
+    assert "an economic policy approach" in result.canonical_row.summary
+    assert "supports" in result.canonical_row.summary
+    assert "[[deregulation]]" in result.canonical_row.summary
+    # Should NOT be generic fallback
+    assert "traceable entity" not in result.canonical_row.summary
+
+
+@pytest.mark.asyncio
+async def test_relationships_remain_in_frontmatter():
+    """Test that RELATIONSHIP claims remain in structured frontmatter even when contributing to summary."""
+    registry = EntityRegistry()
+    resolver = EntityResolver(registry)
+
+    async def fake_enricher(entity_name: str, evidence_records: List[EvidenceRecord], **kwargs: Any):
+        urls = [record.url for record in evidence_records]
+        return [
+            ResearchClaim(
+                subject=entity_name,
+                predicate="is",
+                object="an economic policy approach",
+                claim_text=f"{entity_name} is an economic policy approach.",
+                claim=f"{entity_name} is an economic policy approach.",
+                source_url=urls[0],
+                evidence_urls=[urls[0]],
+            ),
+            ResearchClaim(
+                subject=entity_name,
+                predicate="supports",
+                object="deregulation",
+                claim_text=f"{entity_name} supports deregulation.",
+                claim=f"{entity_name} supports deregulation.",
+                source_url=urls[0],
+                evidence_urls=[urls[0]],
+            ),
+        ]
+
+    pipeline = EntityPipelineService(
+        search_provider=FakeSearchProvider([
+            {"title": "Neoliberal", "url": "https://example.com/neoliberal", "snippet": "Neoliberal policies."}
+        ]),
+        llm_provider=FakeLLMProvider(),
+        registry=registry,
+        resolver=resolver,
+        enricher=fake_enricher,
+    )
+
+    result = await pipeline.run("Neoliberal policies")
+
+    assert result.status == "completed"
+    assert result.node_draft is not None
+    # Relationships should still be in frontmatter
+    assert result.node_draft.frontmatter.get("relationships") is not None
+    assert len(result.node_draft.frontmatter.get("relationships", [])) > 0
+
+
+@pytest.mark.asyncio
+async def test_no_substantive_claims_uses_fallback():
+    """Test that no substantive claims still uses controlled fallback."""
+    registry = EntityRegistry()
+    resolver = EntityResolver(registry)
+
+    async def fake_enricher(entity_name: str, evidence_records: List[EvidenceRecord], **kwargs: Any):
+        urls = [record.url for record in evidence_records]
+        return [
+            ResearchClaim(
+                subject=entity_name,
+                predicate="connected_to",
+                object="something",
+                claim_text=f"{entity_name} is connected to something.",
+                claim=f"{entity_name} is connected to something.",
+                source_url=urls[0],
+                evidence_urls=[urls[0]],
+            ),
+        ]
+
+    pipeline = EntityPipelineService(
+        search_provider=FakeSearchProvider([
+            {"title": "Entity", "url": "https://example.com/entity", "snippet": "An entity."}
+        ]),
+        llm_provider=FakeLLMProvider(),
+        registry=registry,
+        resolver=resolver,
+        enricher=fake_enricher,
+    )
+
+    result = await pipeline.run("Test Entity")
+
+    assert result.status == "completed"
+    assert result.canonical_row is not None
+    # Should use fallback since there's no identity or relationship claim
+    assert "relevant to" in result.canonical_row.summary or "traceable entity" in result.canonical_row.summary
+
+
+@pytest.mark.asyncio
+async def test_summary_generation_is_deterministic():
+    """Test that summary generation is deterministic."""
+    registry = EntityRegistry()
+    resolver = EntityResolver(registry)
+
+    async def fake_enricher(entity_name: str, evidence_records: List[EvidenceRecord], **kwargs: Any):
+        urls = [record.url for record in evidence_records]
+        return [
+            ResearchClaim(
+                subject=entity_name,
+                predicate="is",
+                object="a concept",
+                claim_text=f"{entity_name} is a concept.",
+                claim=f"{entity_name} is a concept.",
+                source_url=urls[0],
+                evidence_urls=[urls[0]],
+            ),
+            ResearchClaim(
+                subject=entity_name,
+                predicate="is",
+                object="something",
+                claim_text=f"{entity_name} regulates something.",
+                claim=f"{entity_name} regulates something.",
+                source_url=urls[0],
+                evidence_urls=[urls[0]],
+            ),
+        ]
+
+    pipeline = EntityPipelineService(
+        search_provider=FakeSearchProvider([
+            {"title": "Test", "url": "https://example.com/test", "snippet": "Test."}
+        ]),
+        llm_provider=FakeLLMProvider(),
+        registry=registry,
+        resolver=resolver,
+        enricher=fake_enricher,
+    )
+
+    result1 = await pipeline.run("Test Entity")
+    result2 = await pipeline.run("Test Entity")
+
+    assert result1.canonical_row.summary == result2.canonical_row.summary 

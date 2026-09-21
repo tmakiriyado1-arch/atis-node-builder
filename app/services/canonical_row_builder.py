@@ -45,7 +45,8 @@ class CanonicalNodeRowBuilder:
         if not claims:
             raise ValueError("node draft must include at least one source-backed claim")
 
-        summary = self._build_summary(entity, claims)
+        # Try to extract summary from NodeDraft body if it has a Summary section
+        summary = self._extract_summary_from_draft(node_draft, entity, claims)
         relationships = self._extract_relationships(claims)
         associations = self._extract_associations(claims)
         sources = self._extract_sources(node_draft, claims)
@@ -66,6 +67,33 @@ class CanonicalNodeRowBuilder:
             associations=associations,
             sources=sources,
         )
+
+    def _extract_summary_from_draft(self, node_draft: NodeDraft, entity: str, claims: Sequence[ResearchClaim]) -> str:
+        """Extract summary from NodeDraft body, preferring explicit Summary section."""
+        body = node_draft.body or ""
+        
+        # Try to extract from body Summary section
+        if "## Summary" in body:
+            lines = body.split("\n")
+            summary_lines = []
+            in_summary = False
+            for line in lines:
+                stripped = line.strip()
+                if stripped == "## Summary":
+                    in_summary = True
+                    continue
+                if in_summary:
+                    if stripped.startswith("##"):
+                        break
+                    if stripped:
+                        summary_lines.append(stripped)
+            if summary_lines:
+                # Join summary lines, remove bullet points
+                summary_text = " ".join(line.lstrip("- ") for line in summary_lines if line.strip())
+                return summary_text.strip()
+        
+        # Fall back to old behavior
+        return self._build_summary(entity, claims)
 
     def _uid_from_entity(self, entity: str) -> str:
         cleaned = re.sub(r"[^a-z0-9]+", "-", entity.lower()).strip("-")

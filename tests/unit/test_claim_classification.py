@@ -148,7 +148,88 @@ class TestClaimClassification:
 
         assert grouped[ClaimCategory.RELATIONSHIP] == ["regulates::[[Electricity]]"]
         assert sorted(grouped[ClaimCategory.SUMMARY]) == []
-        assert len(grouped[ClaimCategory.RELATIONSHIP]) == 1
+
+
+# =============================================================================
+# STEP 10B - Semantic Entity Type Classification Tests
+# =============================================================================
+
+    def test_concept_entity_type_classification(self):
+        """Test that 'is an economic policy approach' classifies as entity_type=concept with subtype=economic_policy."""
+        claim = ResearchClaim(
+            subject="Neoliberal policies",
+            predicate="is",
+            object="an economic policy approach",
+            claim_text="Neoliberal policies is an economic policy approach.",
+            evidence_urls=["https://example.com/neoliberal"],
+            claim="Neoliberal policies is an economic policy approach.",
+            source_url="https://example.com/neoliberal",
+        )
+
+        result = ClaimClassifier().classify(claim)
+
+        assert result.category == ClaimCategory.METADATA
+        assert result.metadata_field == "entity_type"
+        assert result.target == "an economic policy approach"
+        assert result.subtype == "economic_policy"
+
+    def test_concept_entity_type_simple(self):
+        """Test that 'is a concept' classifies as entity_type=concept."""
+        claim = ResearchClaim(
+            subject="Test Entity",
+            predicate="is",
+            object="a concept",
+            claim_text="Test Entity is a concept.",
+            evidence_urls=["https://example.com/test"],
+            claim="Test Entity is a concept.",
+            source_url="https://example.com/test",
+        )
+
+        result = ClaimClassifier().classify(claim)
+
+        assert result.category == ClaimCategory.METADATA
+        assert result.metadata_field == "entity_type"
+        assert result.target == "a concept"
+        assert result.subtype is None
+
+    def test_existing_government_agency_classification_unchanged(self):
+        """Test that existing government agency classification still works."""
+        claim = ResearchClaim(
+            subject="ZERA",
+            predicate="is_a",
+            object="government agency",
+            claim_text="ZERA is a government agency.",
+            evidence_urls=["https://example.com/zera"],
+            claim="ZERA is a government agency.",
+            source_url="https://example.com/zera",
+        )
+
+        result = ClaimClassifier().classify(claim)
+
+        assert result.category == ClaimCategory.METADATA
+        assert result.metadata_field == "entity_type"
+        assert result.target == "government agency"
+
+    def test_policy_regulates_not_entity_type(self):
+        """Test that 'A policy regulates electricity' does NOT classify as entity_type=policy."""
+        claim = ResearchClaim(
+            subject="A policy",
+            predicate="regulates",
+            object="Electricity",
+            claim_text="A policy regulates Electricity.",
+            evidence_urls=["https://example.com/policy"],
+            claim="A policy regulates Electricity.",
+            source_url="https://example.com/policy",
+        )
+
+        result = ClaimClassifier().classify(claim)
+
+        # Should NOT be METADATA (i.e., should not classify as entity_type=policy)
+        # The existing relationship detection has a check that prevents "policy" from being
+        # classified as a direct relationship, so it falls through to UNCLASSIFIED
+        # This is acceptable - the key requirement is it's NOT entity_type=policy
+        assert result.category != ClaimCategory.METADATA
+        assert result.metadata_field is None
 
     def test_no_claim_invention_when_routing(self):
         classifier = ClaimClassifier()
