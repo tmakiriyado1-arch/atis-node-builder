@@ -163,7 +163,7 @@ class ResearchEngine:
             result.error_message = "No search provider is configured for research"
             return result
 
-        queries = self.generate_queries(cleaned_name, entity_type=entity_type, context=context, max_queries=2)
+        queries = self.generate_queries(cleaned_name, entity_type=entity_type, context=context, max_queries=4)
         evidence_records: List[EvidenceRecord] = []
         claims: List[ResearchClaim] = []
 
