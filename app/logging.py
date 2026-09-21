@@ -2,12 +2,12 @@
 Application logging setup
 """
 import logging
-from app.config import LOG_LEVEL
+
 
 def setup_logging():
     """Configure application-wide logging"""
     logging.basicConfig(
-        level=LOG_LEVEL,
+        level=logging.INFO,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
     
