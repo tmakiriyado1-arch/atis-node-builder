@@ -42,14 +42,14 @@ class RITAEntity:
         if raw_json is None:
             raw_json = dict(mapping)
         if not isinstance(raw_json, dict):
-            raise RITAValidationError("raw_json must be a dictionary for a valid RITA entity row")
+            raw_json = {"raw_json": str(raw_json)}
+        else:
+            raw_json = dict(raw_json)
 
-        raw_json = dict(raw_json)
-
-        aliases = cls._parse_string_list(mapping.get("aliases"))
-        source_ids = cls._parse_string_list(mapping.get("source_ids"))
-        metadata = cls._parse_metadata(mapping.get("metadata"))
-        source_count = cls._parse_int(mapping.get("source_count"))
+        aliases = cls._parse_string_list(mapping.get("aliases"), "aliases")
+        source_ids = cls._parse_string_list(mapping.get("source_ids"), "source_ids")
+        metadata = cls._parse_metadata(mapping.get("metadata"), "metadata")
+        source_count = cls._parse_int(mapping.get("source_count"), "source_count")
 
         entity = cls(
             entity_id=str(mapping.get("entity_id") or "").strip(),
