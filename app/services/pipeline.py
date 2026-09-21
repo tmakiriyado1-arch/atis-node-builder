@@ -50,11 +50,14 @@ class EntityPipelineService:
         row_builder: Optional[CanonicalNodeRowBuilder] = None,
         enricher: Optional[Any] = None,
     ) -> None:
+        from app import config
+        from app.services.research.web_search import WebSearchProvider
+        
         self.registry = registry or EntityRegistry()
         self.resolver = resolver or EntityResolver(self.registry)
-        self.search_provider = search_provider
-        self.llm_provider = llm_provider
-        self.research_engine = research_engine or ResearchEngine(self.search_provider, llm_provider=None)
+        self.search_provider = search_provider or WebSearchProvider()
+        self.llm_provider = llm_provider or type('LLMProvider', (), {'api_key': config.MISTRAL_API_KEY, 'model': config.MISTRAL_MODEL})()
+        self.research_engine = research_engine or ResearchEngine(self.search_provider, llm_provider=self.llm_provider)
         self.classifier = classifier or ClaimClassifier(registry=self.registry, resolver=self.resolver)
         self.node_builder = node_builder or NodeDraftBuilder(registry=self.registry, resolver=self.resolver)
         self.row_builder = row_builder or CanonicalNodeRowBuilder()
