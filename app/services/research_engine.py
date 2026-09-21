@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from app import config
@@ -218,7 +218,7 @@ class ResearchEngine:
                         source_type="webpage",
                         confidence=0.0,
                         extraction_method="search_result",
-                        extracted_at=datetime.now(),
+                        extracted_at=datetime.now(timezone.utc),
                     )
                 )
 
@@ -226,7 +226,7 @@ class ResearchEngine:
         result.evidence = deduped_evidence
         result.sources_count = len(deduped_evidence)
         result.status = "completed"
-        result.research_completed_at = datetime.now()
+        result.research_completed_at = datetime.now(timezone.utc)
         result.summary = (
             f"Searched for '{cleaned_name}' and collected {len(deduped_evidence)} deduplicated evidence record(s). "
             "Candidate claims were produced only from the supplied evidence. No facts were verified."
