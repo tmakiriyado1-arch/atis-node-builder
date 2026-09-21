@@ -9,6 +9,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
+import httpx
+
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 
@@ -27,6 +29,7 @@ class SyncStatusResponse(BaseModel):
     file_exists: bool = Field(default=False, description="Whether the file exists")
     timestamp: str = Field(default="", description="When the sync was performed")
     error: Optional[str] = Field(default=None, description="Error message if any")
+    workflow_run_url: Optional[str] = Field(default=None, description="URL to GitHub workflow run")
 
 
 class SyncTriggerResponse(BaseModel):
@@ -37,6 +40,43 @@ class SyncTriggerResponse(BaseModel):
 
 
 SYNC_STORE: dict[str, dict[str, Any]] = {}
+
+
+async def _trigger_github_workflow() -> tuple[bool, str, str, Optional[str]]:
+    """
+    Trigger the GitHub Action workflow to sync RITA entities.
+    
+    Returns: (success, message, error, workflow_run_url)
+    """
+    token = os.getenv("GITHUB_TOKEN")
+    repo = os.getenv("GITHUB_REPOSITORY", "tmakiriyado1-arch/atis-node-builder")
+    
+    if not token:
+        return False, "", "GITHUB_TOKEN not configured. Cannot trigger workflow.", None
+    
+    url = f"https://api.github.com/repos/{repo}/actions/workflows/sync-rita-entities.yml/dispatches"
+    headers = {
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github+json",
+    }
+    payload = {"ref": "main"}
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(url, headers=headers, json=payload)
+            if response.status_code == 204:
+                # Workflow triggered successfully
+                # Try to get the workflow run URL
+                workflow_url = f"https://github.com/{repo}/actions/workflows/sync-rita-entities.yml"
+                return True, "GitHub Action workflow triggered successfully", "", workflow_url
+            else:
+                return False, "", f"GitHub API error: {response.status_code} - {response.text}", None
+    except httpx.TimeoutException:
+        return False, "", "GitHub API request timed out", None
+    except httpx.HTTPStatusError as e:
+        return False, "", f"GitHub API HTTP error: {e.response.status_code} - {e.response.text}", None
+    except Exception as e:
+        return False, "", f"Failed to trigger workflow: {str(e)}", None
 
 
 def _run_sync_script() -> tuple[int, str, str]:
@@ -78,14 +118,41 @@ async def _execute_sync(sync_id: str) -> None:
         record["message"] = "Starting RITA entity sync..."
         record["started_at"] = datetime.utcnow().isoformat()
         
-        # Run the sync script
+        # Try GitHub workflow trigger first (preferred method)
+        success, message, error, workflow_url = await _trigger_github_workflow()
+        
+        if success:
+            record["status"] = "queued"
+            record["message"] = message
+            record["workflow_run_url"] = workflow_url
+            record["completed_at"] = datetime.utcnow().isoformat()
+            record["error"] = None
+            logger.info(f"Sync {sync_id}: GitHub workflow triggered, URL={workflow_url}")
+            return
+        
+        # Fallback: try local sync only if Google auth is explicitly configured
+        google_token = os.getenv("GOOGLE_APPLICATION_CREDENTIALS") or os.getenv("GOOGLE_SHEETS_API_KEY")
+        if not google_token:
+            # No Google auth available, cannot run local sync
+            record["status"] = "failed"
+            record["message"] = "Sync requires GitHub Action or Google authentication"
+            record["error"] = error or "GITHUB_TOKEN not configured for GitHub workflow trigger, and no Google credentials available for local sync"
+            record["completed_at"] = datetime.utcnow().isoformat()
+            logger.error(f"Sync {sync_id}: No valid auth method - GitHub error: {error}")
+            return
+        
+        # Fallback to local sync
+        logger.info(f"Sync {sync_id}: Falling back to local sync...")
+        record["message"] = "Falling back to local sync (GitHub trigger unavailable)..."
+        
         returncode, stdout, stderr = _run_sync_script()
         
         if returncode != 0:
             record["status"] = "failed"
-            record["message"] = f"Sync script failed with return code {returncode}"
+            record["message"] = f"Local sync failed with return code {returncode}"
             record["error"] = stderr or stdout
             record["completed_at"] = datetime.utcnow().isoformat()
+            logger.error(f"Sync {sync_id}: Local sync failed - {stderr}")
             return
         
         # Verify the file was updated
@@ -93,18 +160,21 @@ async def _execute_sync(sync_id: str) -> None:
         diagnostics = service.get_snapshot_diagnostics()
         
         record["status"] = "completed"
-        record["message"] = stdout.strip() or "Sync completed successfully"
+        record["message"] = stdout.strip() or "Local sync completed successfully"
         record["entity_count"] = diagnostics.get("entity_count", 0)
         record["file_path"] = diagnostics.get("snapshot_path", "")
         record["file_exists"] = diagnostics.get("snapshot_exists", False)
+        record["workflow_run_url"] = None
         record["completed_at"] = datetime.utcnow().isoformat()
         record["error"] = None
+        logger.info(f"Sync {sync_id}: Local sync completed, entities={record['entity_count']}")
         
     except Exception as e:
         record["status"] = "failed"
         record["message"] = f"Sync failed: {str(e)}"
         record["error"] = str(e)
         record["completed_at"] = datetime.utcnow().isoformat()
+        logger.exception(f"Sync {sync_id}: Unexpected error")
 
 
 @router.post("/rita-entities", response_model=SyncTriggerResponse, status_code=status.HTTP_202_ACCEPTED)
@@ -112,14 +182,21 @@ async def trigger_rita_sync() -> SyncTriggerResponse:
     """
     Trigger a manual sync of RITA entities from Google Sheets.
     
-    This endpoint runs the sync_rita_entities.py script which:
-    1. Authenticates to Google using workload identity or service account
-    2. Reads the ENTITY_RAW worksheet from the configured spreadsheet
-    3. Validates and writes the snapshot to data/rita_entities.json
-    4. Commits the changes to git (if running in a git repo)
+    This endpoint first attempts to trigger the GitHub Action workflow
+    (sync-rita-entities.yml) which uses Workload Identity Federation.
     
-    Note: Requires GOOGLE_SHEETS_SPREADSHEET_ID and GOOGLE_SHEETS_WORKSHEET_NAME
-    environment variables to be configured, along with appropriate Google auth.
+    If GitHub workflow trigger is not available (no GITHUB_TOKEN),
+    it falls back to local sync which requires Google credentials.
+    
+    **Recommended:** Configure GITHUB_TOKEN in Render environment with:
+    - A GitHub Personal Access Token with `repo` scope
+    
+    This ensures sync works via GitHub Actions with proper WIF auth.
+    
+    Note: The GitHub Action at `.github/workflows/sync-rita-entities.yml` 
+    authenticates to Google using Workload Identity Federation, reads 
+    the configured RITA sheet, validates each row, and writes the 
+    deterministic JSON snapshot to data/rita_entities.json.
     """
     import uuid
     
@@ -135,6 +212,7 @@ async def trigger_rita_sync() -> SyncTriggerResponse:
         "entity_count": 0,
         "file_path": "",
         "file_exists": False,
+        "workflow_run_url": None,
         "error": None,
     }
     SYNC_STORE[sync_id] = record
@@ -167,6 +245,7 @@ async def get_sync_status(sync_id: str) -> SyncStatusResponse:
         file_exists=record.get("file_exists", False),
         timestamp=record.get("completed_at") or record.get("started_at", ""),
         error=record.get("error"),
+        workflow_run_url=record.get("workflow_run_url"),
     )
 
 
@@ -179,12 +258,13 @@ async def get_latest_sync_status() -> SyncStatusResponse:
         diagnostics = service.get_snapshot_diagnostics()
         return SyncStatusResponse(
             status="idle",
-            message="No sync operation has been triggered yet",
+            message="No sync operation has been triggered yet. Use POST /api/sync/rita-entities to trigger.",
             entity_count=diagnostics.get("entity_count", 0),
             file_path=diagnostics.get("snapshot_path", ""),
             file_exists=diagnostics.get("snapshot_exists", False),
             timestamp="",
             error=None,
+            workflow_run_url=None,
         )
     
     # Get the most recent sync
@@ -199,6 +279,7 @@ async def get_latest_sync_status() -> SyncStatusResponse:
         file_exists=record.get("file_exists", False),
         timestamp=record.get("completed_at") or record.get("started_at", ""),
         error=record.get("error"),
+        workflow_run_url=record.get("workflow_run_url"),
     )
 
 
@@ -228,4 +309,5 @@ async def get_rita_entities_status() -> SyncStatusResponse:
         file_exists=diagnostics.get("snapshot_exists", False),
         timestamp=datetime.utcnow().isoformat(),
         error=None,
+        workflow_run_url=None,
     )
