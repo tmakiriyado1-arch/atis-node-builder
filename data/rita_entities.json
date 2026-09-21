@@ -1,1 +1,134 @@
-[]
+[
+  {
+    "entity_id": "232",
+    "name": "Zimbabwe Energy Regulatory Authority (ZERA)",
+    "rita_type": "organization",
+    "aliases": [],
+    "metadata": {},
+    "source_ids": [],
+    "source_count": 0,
+    "extracted_at": "2026-08-17 01:14:24",
+    "extraction_run_id": "",
+    "ingestion_status": "INGESTED"
+  },
+  {
+    "entity_id": "233",
+    "name": "Southern African Power Pool (SAPP)",
+    "rita_type": "organization",
+    "aliases": [],
+    "metadata": {},
+    "source_ids": [],
+    "source_count": 0,
+    "extracted_at": "2026-08-17 01:14:24",
+    "extraction_run_id": "",
+    "ingestion_status": "INGESTED"
+  },
+  {
+    "entity_id": "240",
+    "name": "Government of the Republic of Zambia",
+    "rita_type": "Government",
+    "aliases": [],
+    "metadata": {},
+    "source_ids": [],
+    "source_count": 0,
+    "extracted_at": "2026-08-17 01:15:22",
+    "extraction_run_id": "",
+    "ingestion_status": "INGESTED"
+  },
+  {
+    "entity_id": "241",
+    "name": "African Development Bank (AfDB)",
+    "rita_type": "Organization",
+    "aliases": [],
+    "metadata": {},
+    "source_ids": [],
+    "source_count": 0,
+    "extracted_at": "2026-08-17 01:15:22",
+    "extraction_run_id": "",
+    "ingestion_status": "INGESTED"
+  },
+  {
+    "entity_id": "339",
+    "name": "Memorandum of Understanding (MoU)",
+    "rita_type": "Document",
+    "aliases": [],
+    "metadata": {},
+    "source_ids": [],
+    "source_count": 0,
+    "extracted_at": "2026-08-18 00:11:48",
+    "extraction_run_id": "",
+    "ingestion_status": "INGESTED"
+  },
+  {
+    "entity_id": "391",
+    "name": "Heavily Indebted Poor Countries initiative",
+    "rita_type": "Program",
+    "aliases": [],
+    "metadata": {},
+    "source_ids": [],
+    "source_count": 0,
+    "extracted_at": "2026-08-18 00:20:46",
+    "extraction_run_id": "",
+    "ingestion_status": "INGESTED"
+  },
+  {
+    "entity_id": "403",
+    "name": "Zambian Civil Society Debt Alliance",
+    "rita_type": "Organization",
+    "aliases": [],
+    "metadata": {},
+    "source_ids": [],
+    "source_count": 0,
+    "extracted_at": "2026-08-18 00:22:43",
+    "extraction_run_id": "",
+    "ingestion_status": "INGESTED"
+  },
+  {
+    "entity_id": "405",
+    "name": "Memorandum of Understanding",
+    "rita_type": "Document",
+    "aliases": [],
+    "metadata": {},
+    "source_ids": [],
+    "source_count": 0,
+    "extracted_at": "2026-08-18 00:22:43",
+    "extraction_run_id": "",
+    "ingestion_status": "INGESTED"
+  },
+  {
+    "entity_id": "406",
+    "name": "Neoliberal policies",
+    "rita_type": "Policy",
+    "aliases": [],
+    "metadata": {},
+    "source_ids": [],
+    "source_count": 0,
+    "extracted_at": "2026-08-18 00:23:14",
+    "extraction_run_id": "",
+    "ingestion_status": "INGESTED"
+  },
+  {
+    "entity_id": "407",
+    "name": "Extractive colonial style economy",
+    "rita_type": "Economic system",
+    "aliases": [],
+    "metadata": {},
+    "source_ids": [],
+    "source_count": 0,
+    "extracted_at": "2026-08-18 00:23:14",
+    "extraction_run_id": "",
+    "ingestion_status": "INGESTED"
+  },
+  {
+    "entity_id": "413",
+    "name": "International debt",
+    "rita_type": "Concept",
+    "aliases": [],
+    "metadata": {},
+    "source_ids": [],
+    "source_count": 0,
+    "extracted_at": "2026-08-18 00:23:15",
+    "extraction_run_id": "",
+    "ingestion_status": "INGESTED"
+  }
+]
