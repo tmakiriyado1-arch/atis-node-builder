@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from app import config
@@ -25,7 +25,7 @@ class ResearchClaim:
     source_type: str = "webpage"
     confidence: float = 0.0
     extraction_method: str = "search_result"
-    extracted_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    extracted_at: datetime = field(default_factory=datetime.now)
     subject: Optional[str] = None
     predicate: Optional[str] = None
     object: Optional[str] = None
@@ -61,7 +61,7 @@ class ResearchResult:
     claims: List[ResearchClaim] = field(default_factory=list)
     summary: str = ""
     sources_count: int = 0
-    research_completed_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    research_completed_at: datetime = field(default_factory=datetime.now)
     status: str = "completed"
     error_message: Optional[str] = None
     evidence: List[EvidenceRecord] = field(default_factory=list)
@@ -110,7 +110,7 @@ class ResearchEngine:
         entity_name: str,
         entity_type: Optional[str] = None,
         context: Optional[str] = None,
-        max_queries: int = 2,
+        max_queries: int = 4,
     ) -> List[str]:
         """Generate a small set of deterministic search queries for the entity."""
         cleaned_name = (entity_name or "").strip()
@@ -122,6 +122,15 @@ class ResearchEngine:
         if len(queries) >= max_queries:
             return queries[:max_queries]
 
+        # Split multi-word queries into individual meaningful tokens
+        # for fallback evidence retrieval
+        if cleaned_name and " " in cleaned_name:
+            words = cleaned_name.split()
+            # Add individual words as fallback queries
+            for word in words:
+                if word not in queries and len(queries) < max_queries:
+                    queries.append(word)
+
         contextual_parts = []
         if entity_type and str(entity_type).strip():
             contextual_parts.append(str(entity_type).strip())
@@ -130,7 +139,7 @@ class ResearchEngine:
 
         if contextual_parts:
             secondary = " ".join([cleaned_name, *contextual_parts]).strip() if cleaned_name else " ".join(contextual_parts).strip()
-            if secondary and secondary not in queries:
+            if secondary and secondary not in queries and len(queries) < max_queries:
                 queries.append(secondary)
 
         return queries[:max_queries]
@@ -182,19 +191,12 @@ class ResearchEngine:
 
         deduped_evidence = deduplicate_evidence(evidence_records)
         if not deduped_evidence:
-            # Create minimal evidence from entity name if search returned nothing
-            from app.services.research.evidence import EvidenceRecord
-            from datetime import datetime, timezone
-            deduped_evidence = [
-                EvidenceRecord(
-                    url=f"https://example.com/{cleaned_name.replace(' ', '-')}",
-                    title=f"About {cleaned_name}",
-                    snippet=f"Information about {cleaned_name} based on entity metadata.",
-                    entity_name=cleaned_name,
-                    query=cleaned_name,
-                    retrieved_at=datetime.now(timezone.utc),
-                )
-            ]
+            result.error_message = (
+                f"No usable search results were returned for '{cleaned_name}'. "
+                "The provider did not surface enough public evidence to continue this slice."
+            )
+            result.summary = "No public evidence was available for this entity in the current research slice."
+            return result
 
         if self.llm_provider is not None:
             try:
@@ -204,6 +206,8 @@ class ResearchEngine:
                     api_key=getattr(self.llm_provider, "api_key", config.MISTRAL_API_KEY),
                 )
             except Exception:
+                claims = []
+            if not claims:
                 claims = []
         if not claims:
             for evidence in deduped_evidence:
@@ -218,7 +222,7 @@ class ResearchEngine:
                         source_type="webpage",
                         confidence=0.0,
                         extraction_method="search_result",
-                        extracted_at=datetime.now(timezone.utc),
+                        extracted_at=datetime.now(),
                     )
                 )
 
@@ -226,7 +230,7 @@ class ResearchEngine:
         result.evidence = deduped_evidence
         result.sources_count = len(deduped_evidence)
         result.status = "completed"
-        result.research_completed_at = datetime.now(timezone.utc)
+        result.research_completed_at = datetime.now()
         result.summary = (
             f"Searched for '{cleaned_name}' and collected {len(deduped_evidence)} deduplicated evidence record(s). "
             "Candidate claims were produced only from the supplied evidence. No facts were verified."
