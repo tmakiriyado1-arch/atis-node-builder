@@ -131,7 +131,13 @@ async def _execute_sync(sync_id: str) -> None:
             return
         
         # Fallback: try local sync only if Google auth is explicitly configured
-        google_token = os.getenv("GOOGLE_APPLICATION_CREDENTIALS") or os.getenv("GOOGLE_SHEETS_API_KEY")
+        google_token = (
+            os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+            or os.getenv("GOOGLE_SHEETS_API_KEY")
+            or os.getenv("GOOGLE_SHEETS_SPREADSHEET_ID")
+            or os.getenv("GOOGLE_IMPERSONATE_SERVICE_ACCOUNT")
+            or os.getenv("GOOGLE_SERVICE_ACCOUNT_EMAIL")
+        )
         if not google_token:
             # No Google auth available, cannot run local sync
             record["status"] = "failed"
