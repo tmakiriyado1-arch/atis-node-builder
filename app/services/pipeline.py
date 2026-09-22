@@ -125,7 +125,7 @@ class EntityPipelineService:
         
         node_draft = self.node_builder.build(claims)
         result.node_draft = node_draft
-        pipeline_logger.info(f"[PIPELINE {source_entity_id}] Node draft created: {len(node_draft.properties) if node_draft else 0} properties")
+        pipeline_logger.info(f"[PIPELINE {source_entity_id}] Node draft created: title={getattr(node_draft, 'title', 'None')[:50] if node_draft else 'None'}, body_len={len(getattr(node_draft, 'body', '')) if node_draft else 0}")
 
         try:
             row = self.row_builder.build(node_draft)
