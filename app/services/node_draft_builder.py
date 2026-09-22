@@ -273,11 +273,20 @@ class NodeDraftBuilder:
             if alias != entity_name:
                 return alias
         
+        # Look for acronyms in parentheses
+        match = re.search(r"\(([A-Z]{2,})\)", text)
+        if match:
+            alias = match.group(1).strip()
+            if alias != entity_name:
+                return alias
+        
         # Look for "also known as" patterns
         aka_patterns = [
             r"also known as\s+([^\.]+)",
             r"aka\s+([^\.]+)",
-            r"\(([A-Z]{2,})\)",
+            r"a\.k\.a\.\s+([^\.]+)",
+            r"referred to as\s+([^\.]+)",
+            r"commonly called\s+([^\.]+)",
         ]
         for pattern in aka_patterns:
             match = re.search(pattern, text, re.IGNORECASE)
@@ -302,7 +311,10 @@ class NodeDraftBuilder:
         
         # Add sector
         if sector:
-            parts.append(f"operating in the {sector}")
+            if sector.lower().endswith("sector"):
+                parts.append(f"operating in the {sector}")
+            else:
+                parts.append(f"operating in the {sector} sector")
         
         # Add what it does from claims
         action_phrases = []
@@ -310,9 +322,9 @@ class NodeDraftBuilder:
             classification = self.classifier.classify(claim)
             claim_text = classification.raw_claim or self._claim_text(claim)
             
-            # Extract action phrases
+            # Extract action phrases - look for what the entity does
             action_match = re.search(
-                r"(?:has|have|was|were|is|are)\s+(?:created|established|founded|developed|built|formed)\s+([^.]+)",
+                r"(?:has|have|was|were|is|are|established|founded|created|developed|built|formed|launched)\s+([^.]+)",
                 claim_text,
                 re.IGNORECASE
             )
@@ -321,12 +333,21 @@ class NodeDraftBuilder:
             
             # Extract "provides" patterns
             provides_match = re.search(
-                r"(?:provides|supports|offers|delivers|facilitates|enables|coordinates|manages|oversees)\s+([^.]+)",
+                r"(?:provides|supports|offers|delivers|facilitates|enables|coordinates|manages|oversees|regulates|administers|operates|maintains)\s+([^.]+)",
                 claim_text,
                 re.IGNORECASE
             )
             if provides_match:
                 action_phrases.append(provides_match.group(1).strip())
+            
+            # Extract "creates" patterns
+            creates_match = re.search(
+                r"(?:creates|establishes|develops|implements|executes|advises|consults|represents)\s+([^.]+)",
+                claim_text,
+                re.IGNORECASE
+            )
+            if creates_match:
+                action_phrases.append(creates_match.group(1).strip())
         
         if action_phrases:
             if parts[-1].endswith("ing") or parts[-1].endswith("ed"):
@@ -341,7 +362,7 @@ class NodeDraftBuilder:
             if claims:
                 first_text = self._claim_text(claims[0])
                 # Remove the entity name from the beginning if present
-                cleaned = re.sub(rf"^{re.escape(entity)}\s*(?:is|are|was|were)\s*", "", first_text, flags=re.IGNORECASE).strip()
+                cleaned = re.sub(rf"^{re.escape(entity)}\s*(?:is|are|was|were|be|being|been)\s*", "", first_text, flags=re.IGNORECASE).strip()
                 if cleaned:
                     parts.append(cleaned)
         

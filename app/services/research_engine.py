@@ -264,6 +264,9 @@ class ResearchEngine:
             elif isinstance(context, dict):
                 search_context.update(context)
         
+        # Initialize claims list
+        claims: List[ResearchClaim] = []
+        
         # Use the orchestrator to search across multiple providers
         if self.orchestrator is not None:
             logger.info(f"[RESEARCH {cleaned_name}] Using SearchOrchestrator with {len(self.orchestrator.providers)} providers")

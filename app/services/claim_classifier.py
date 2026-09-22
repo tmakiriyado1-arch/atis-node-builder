@@ -313,6 +313,32 @@ class ClaimClassifier:
                     raw_claim=text,
                 )
 
+        # Enhanced: Try to extract location information first
+        location = self._extract_location(text)
+        if location:
+            return ClaimClassification(
+                category=ClaimCategory.METADATA,
+                target=location,
+                predicate="located_in",
+                metadata_field="country",
+                evidence_urls=evidence_urls,
+                reasoning="location extracted from claim text",
+                raw_claim=text,
+            )
+
+        # Enhanced: Try to extract sector information
+        sector = self._extract_sector(text)
+        if sector:
+            return ClaimClassification(
+                category=ClaimCategory.METADATA,
+                target=sector,
+                predicate="operates_in",
+                metadata_field="sector",
+                evidence_urls=evidence_urls,
+                reasoning="sector extracted from claim text",
+                raw_claim=text,
+            )
+
         # Check for direct relationships
         if self._is_direct_relationship(text, predicate, target):
             route_target = self._canonical_target(subject, target)
@@ -352,32 +378,6 @@ class ClaimClassifier:
                 raw_claim=text,
             )
 
-        # Enhanced: Try to extract location information
-        location = self._extract_location(text)
-        if location:
-            return ClaimClassification(
-                category=ClaimCategory.METADATA,
-                target=location,
-                predicate="located_in",
-                metadata_field="country",
-                evidence_urls=evidence_urls,
-                reasoning="location extracted from claim text",
-                raw_claim=text,
-            )
-
-        # Enhanced: Try to extract sector information
-        sector = self._extract_sector(text)
-        if sector:
-            return ClaimClassification(
-                category=ClaimCategory.METADATA,
-                target=sector,
-                predicate="operates_in",
-                metadata_field="sector",
-                evidence_urls=evidence_urls,
-                reasoning="sector extracted from claim text",
-                raw_claim=text,
-            )
-
         # Enhanced: Try to find any verb-based relationship
         verb_relationship = self._extract_verb_relationship(text, subject)
         if verb_relationship:
@@ -401,6 +401,19 @@ class ClaimClassifier:
                 predicate="describes",
                 evidence_urls=evidence_urls,
                 reasoning="descriptive claim routed to summary",
+                raw_claim=text,
+            )
+
+        # Enhanced: Try to extract entity type from descriptive text
+        extracted_type = self._extract_entity_type_from_descriptive_text(text)
+        if extracted_type:
+            return ClaimClassification(
+                category=ClaimCategory.METADATA,
+                target=extracted_type,
+                predicate="is",
+                metadata_field="entity_type",
+                evidence_urls=evidence_urls,
+                reasoning="entity type extracted from descriptive text",
                 raw_claim=text,
             )
 
@@ -604,6 +617,20 @@ class ClaimClassifier:
             if keyword.lower() in lower_target:
                 return keyword
         
+        # If target looks like an organization name, classify it
+        if any(org_keyword in lower_target for org_keyword in [
+            'power', 'electricity', 'energy', 'development', 'community',
+            'southern', 'african', 'regulatory', 'authority'
+        ]):
+            # Check if it's a cooperation/pool/authority
+            if 'cooperation' in lower_target or 'pool' in lower_target:
+                return 'cooperation'
+            if 'authority' in lower_target:
+                return 'regulatory authority'
+            if 'development' in lower_target and 'community' in lower_target:
+                return 'development community'
+            return 'organization'
+        
         return None
 
     def _extract_location(self, text: str) -> Optional[str]:
@@ -648,6 +675,29 @@ class ClaimClassifier:
         
         return None
 
+    def _extract_entity_type_from_descriptive_text(self, text: str) -> Optional[str]:
+        """Extract entity type from descriptive text without explicit 'is a' pattern."""
+        lower = text.lower()
+        
+        # Check for organization patterns in descriptive text
+        org_patterns = [
+            (r"\b(is|are|was|were|functions as|operates as|acts as|serves as)\s+(?:a|an|the)\s+([a-z0-9\s-]+)", "entity_type"),
+            (r"\b(known as|referred to as|called|also known as)\s+([a-z0-9\s-]+)", "entity_type"),
+        ]
+        
+        for pattern, field in org_patterns:
+            match = re.search(pattern, lower, re.IGNORECASE)
+            if match:
+                entity_type = match.group(2).strip()
+                # Check if it's an actual type
+                if any(keyword in entity_type for keyword in [
+                    'cooperation', 'pool', 'authority', 'agency', 'organization',
+                    'company', 'institution', 'body', 'commission', 'council'
+                ]):
+                    return entity_type.capitalize()
+        
+        return None
+
     def _extract_sector(self, text: str) -> Optional[str]:
         """Extract sector information from text."""
         lower = text.lower()
@@ -670,14 +720,18 @@ class ClaimClassifier:
         
         # Check for sector prepositions
         sector_patterns_regex = [
-            r"(?:in the|works in|active in|focused on|specializes in)\s+(?P<sector>[\w\s-]+\s+sector)",
-            r"(?:in the|works in|active in|focused on|specializes in)\s+(?P<sector>\w+)\s+industry",
+            r"(?:in the|works in|active in|focused on|specializes in|operates in|involved in|participates in)\s+(?P<sector>[\w\s-]+\s+sector)",
+            r"(?:in the|works in|active in|focused on|specializes in|operates in|involved in|participates in)\s+(?P<sector>\w+)\s+industry",
         ]
         for pattern in sector_patterns_regex:
             match = re.search(pattern, lower, re.IGNORECASE)
             if match:
                 sector = match.group("sector").strip()
                 return sector.title()
+        
+        # Check for "common market for electricity" or similar patterns
+        if "electricity" in lower or "power" in lower:
+            return "Electricity Sector"
         
         return None
 
@@ -786,10 +840,19 @@ class ClaimClassifier:
                 "was founded", "was established", "was created",
                 "functions", "operates", "works", "provides",
                 "supports", "coordinates", "manages", "oversees",
+                "creates", "maintains", "develops", "facilitates",
             ]
             for verb in descriptive_verbs:
                 if verb in lower:
                     return True
+        
+        # Also check if it's a general description even without explicit subject match
+        if any(verb in lower for verb in [
+            "is a", "are a", "was a", "were a", "is an", "are an",
+            "functions as", "operates as", "serves as", "acts as",
+            "provides", "supports", "coordinates", "manages",
+        ]):
+            return True
         
         return False
 

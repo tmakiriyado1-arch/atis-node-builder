@@ -287,7 +287,7 @@ class CanonicalNodeRowBuilder:
             if not cleaned.endswith("."):
                 cleaned = cleaned + "."
             # Ensure it has a verb that explains function
-            if not re.search(r"\b(is|are|was|were|regulates|manages|oversees|supports|operates|provides|governs|controls|establishes|requires|enforces|includes|covers|monitors|administers|coordinates|maintains|owns|leads|created|has|functions|delivers|facilitates|enables)\b", cleaned, re.IGNORECASE):
+            if not re.search(r"\b(is|are|was|were|regulates|manages|oversees|supports|operates|provides|governs|controls|establishes|requires|enforces|includes|covers|monitors|administers|coordinates|maintains|owns|leads|created|has|functions|delivers|facilitates|enables|develops|implements)\b", cleaned, re.IGNORECASE):
                 # Add a generic function description
                 cleaned = f"{cleaned} It functions within its established framework."
             return cleaned
@@ -312,6 +312,15 @@ class CanonicalNodeRowBuilder:
             # Capitalize
             return entity_type.capitalize()
         
+        # Look for cooperation/pool/authority patterns
+        if any(pattern in body.lower() for pattern in ['cooperation', 'pool', 'authority', 'regulatory']):
+            if 'cooperation' in body.lower():
+                return 'Cooperation'
+            if 'pool' in body.lower():
+                return 'Pool'
+            if 'authority' in body.lower():
+                return 'Regulatory Authority'
+        
         return None
 
     def _extract_country_from_body(self, body: str) -> Optional[str]:
@@ -335,6 +344,14 @@ class CanonicalNodeRowBuilder:
             "Mozambique",
             "Kenya",
             "Nigeria",
+            "Ghana",
+            "Uganda",
+            "Tanzania",
+            "Zambia",
+            "Malawi",
+            "Botswana",
+            "Namibia",
+            "Angola",
         ]
         for country in country_patterns:
             if country in body:
@@ -365,6 +382,14 @@ class CanonicalNodeRowBuilder:
         for sector in sector_patterns:
             if sector.lower() in body.lower():
                 return sector
+        
+        # Look for "common market for electricity" pattern
+        if "electricity" in body.lower():
+            return "Electricity Sector"
+        if "power" in body.lower():
+            return "Power Sector"
+        if "energy" in body.lower():
+            return "Energy Sector"
         
         return None
 

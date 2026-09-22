@@ -300,6 +300,21 @@ class DirectSiteCrawler(SearchProvider):
         acronym = self._extract_acronym(query)
         base_name = self._remove_acronym(query)
         
+        # For Zimbabwe entities, prioritize .co.zw domains
+        # Check if query mentions Zimbabwe or SADC
+        if any(keyword in query.lower() for keyword in ['zimbabwe', 'sadc', 'southern africa']):
+            if acronym:
+                urls.extend([
+                    f"https://{acronym.lower()}.co.zw/",
+                    f"https://www.{acronym.lower()}.co.zw/",
+                    f"https://{acronym.lower()}.gov.zw/",
+                ])
+            urls.extend([
+                f"https://{base_name.lower().replace(' ', '-')}.co.zw/",
+                f"https://www.{base_name.lower().replace(' ', '-')}.co.zw/",
+            ])
+        
+        # Also add generic domains
         if acronym:
             urls.extend([
                 f"https://{acronym.lower()}.org/",
@@ -351,7 +366,7 @@ class DirectSiteCrawler(SearchProvider):
             f"https://{base_name.lower().replace(' ', '-')}.com/",
         ]
         
-        # Combine all domains
+        # Combine all domains - prioritize African domains first
         all_domains = african_domains + sadc_domains + international_domains
         
         # Filter out None values and deduplicate

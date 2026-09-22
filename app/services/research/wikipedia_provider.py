@@ -121,7 +121,7 @@ class WikipediaProvider(SearchProvider):
         return None
 
     async def _search_api(self, query: str, max_results: int) -> List[Dict[str, Any]]:
-        """Search Wikipedia using the OpenSearch API."""
+        """Search Wikipedia using the OpenSearch API with filtering to avoid substring matches."""
         params = {
             "action": "opensearch",
             "search": query,
@@ -144,19 +144,55 @@ class WikipediaProvider(SearchProvider):
             return []
         
         results = []
+        query_lower = query.lower()
+        
         for i, title in enumerate(data[1]):
             if i >= max_results:
                 break
             url = data[3][i] if i < len(data[3]) else None
             snippet = data[2][i] if i < len(data[2]) else ""
             
-            if title and url:
-                results.append({
-                    "title": str(title),
-                    "url": str(url),
-                    "snippet": str(snippet),
-                    "source": "wikipedia",
-                })
+            if not title or not url:
+                continue
+            
+            # Filter out substring matches for acronyms
+            # If query contains an acronym in parentheses like "ZERA",
+            # filter out results where the acronym appears as a substring in unrelated titles
+            title_lower = str(title).lower()
+            
+            # Extract acronym from query if present
+            acronym = self._extract_acronym(query)
+            if acronym:
+                # Check if this result is just a substring match
+                # For example: "Zera Yacob" matches "ZERA" but is not about Zimbabwe Energy Regulatory Authority
+                # We want to filter out results where:
+                # 1. The title contains the acronym as a substring but not as a standalone word
+                # 2. The title doesn't contain words from the base query (without acronym)
+                base_query = self._remove_acronym(query)
+                base_words = set(base_query.lower().split())
+                title_words = set(title_lower.split())
+                
+                # If title contains acronym but no words from base query, it's likely a false match
+                if (acronym.lower() in title_lower and 
+                    len(base_words - title_words) > 0 and
+                    len(base_words & title_words) == 0):
+                    # This is likely a substring false positive, skip it
+                    logger.info(f"[WIKIPEDIA] Filtering out substring match: {title}")
+                    continue
+            
+            # Also filter out personal names when searching for organizational acronyms
+            if acronym and len(acronym) >= 3:
+                # Check if title looks like a personal name (Firstname Lastname format)
+                if self._is_personal_name(title_lower):
+                    logger.info(f"[WIKIPEDIA] Filtering out personal name: {title}")
+                    continue
+            
+            results.append({
+                "title": str(title),
+                "url": str(url),
+                "snippet": str(snippet),
+                "source": "wikipedia",
+            })
         
         return results
 
@@ -285,6 +321,47 @@ class WikipediaProvider(SearchProvider):
         if match:
             return match.group(1).strip()
         return None
+
+    @staticmethod
+    def _is_personal_name(title: str) -> bool:
+        """Check if a title looks like a personal name rather than an organization."""
+        # Personal names typically have:
+        # - 2-3 words, capitalized
+        # - No organizational indicators (org, agency, authority, etc.)
+        # - Common first names
+        
+        words = title.split()
+        if len(words) < 2 or len(words) > 4:
+            return False
+        
+        # Check for organizational keywords
+        org_keywords = ['organization', 'agency', 'authority', 'company', 'corporation', 
+                       'institution', 'ministry', 'department', 'commission', 'council',
+                       'board', 'committee', 'foundation', 'institute', 'center', 'bureau',
+                       'office', 'service', 'program', 'initiative', 'project',
+                       'consortium', 'alliance', 'pool', 'cooperation', 'cooperative',
+                       'network', 'association', 'group', 'firm', 'enterprise',
+                       'government', 'public', 'state', 'national', 'regional',
+                       'international', 'african', 'southern', 'development']
+        
+        title_lower = title.lower()
+        if any(keyword in title_lower for keyword in org_keywords):
+            return False
+        
+        # Check for common name patterns (Firstname Lastname)
+        # Capitalized words that are common first names
+        common_first_names = ['john', 'michael', 'david', 'james', 'robert', 'william',
+                              'mary', 'jennifer', 'lisa', 'susan', 'patricia', 'linda',
+                              'elizabeth', 'barbara', 'zera', 'zerelda', 'zerai', 'zerachiah',
+                              'zerah', 'zeran', 'zerator', 'yacob', 'yisrael',
+                              'amha', 'selassie', 'deres', 'zafara', 'zerafa']
+        
+        if len(words) >= 2:
+            first_word = words[0].lower()
+            if first_word in common_first_names:
+                return True
+        
+        return False
 
     @staticmethod
     def _remove_acronym(name: str) -> str:
