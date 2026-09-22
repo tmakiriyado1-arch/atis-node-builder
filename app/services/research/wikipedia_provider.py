@@ -33,7 +33,7 @@ class WikipediaProvider(SearchProvider):
         self,
         base_url: str = "https://en.wikipedia.org/w/api.php",
         rest_base_url: str = "https://en.wikipedia.org/api/rest_v1",
-        timeout: float = 30.0,
+        timeout: float = 15.0,
         user_agent: str = "NORAResearchBot/1.0 (+https://github.com/tmakiriyado1-arch/atis-node-builder)",
     ) -> None:
         self.base_url = base_url

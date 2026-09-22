@@ -26,12 +26,14 @@ class DirectSiteCrawler(SearchProvider):
 
     def __init__(
         self,
-        timeout: float = 30.0,
+        timeout: float = 15.0,
         user_agent: str = "Mozilla/5.0 (compatible; NORAResearchBot/1.0; +https://github.com/tmakiriyado1-arch/atis-node-builder)",
-        max_pages: int = 10,
-        max_depth: int = 2,
+        max_pages: int = 5,
+        max_depth: int = 1,
+        crawl_timeout: float = 10.0,
     ) -> None:
         self.timeout = timeout
+        self.crawl_timeout = crawl_timeout
         self.headers = {"User-Agent": user_agent, "Accept": "text/html"}
         self.max_pages = max_pages
         self.max_depth = max_depth
@@ -132,7 +134,7 @@ class DirectSiteCrawler(SearchProvider):
     async def _crawl_url(self, url: str) -> List[Dict[str, Any]]:
         """Crawl a single URL and extract information."""
         try:
-            async with httpx.AsyncClient(headers=self.headers, timeout=self.timeout) as client:
+            async with httpx.AsyncClient(headers=self.headers, timeout=self.crawl_timeout) as client:
                 response = await client.get(url)
                 response.raise_for_status()
                 
@@ -180,7 +182,7 @@ class DirectSiteCrawler(SearchProvider):
     async def _extract_links(self, url: str) -> List[str]:
         """Extract links from a URL."""
         try:
-            async with httpx.AsyncClient(headers=self.headers, timeout=self.timeout) as client:
+            async with httpx.AsyncClient(headers=self.headers, timeout=self.crawl_timeout) as client:
                 response = await client.get(url)
                 response.raise_for_status()
                 
@@ -311,33 +313,49 @@ class DirectSiteCrawler(SearchProvider):
         return [url for url in urls if self._is_url(url)]
 
     def _generate_common_urls(self, query: str) -> List[str]:
-        """Generate common URL patterns for the query."""
+        """Generate common URL patterns for the query.
+        
+        For African entities, prioritize .co.zw, .za, .gov.zw domains.
+        For international entities, try .org, .com, .int, .gov.
+        """
         acronym = self._extract_acronym(query)
         base_name = self._remove_acronym(query)
         
         urls = []
         
-        # Try with acronym
-        if acronym:
-            urls.extend([
-                f"https://{acronym.lower()}.org/",
-                f"https://www.{acronym.lower()}.org/",
-                f"https://{acronym.lower()}.com/",
-                f"https://www.{acronym.lower()}.com/",
-                f"https://{acronym.lower()}.co.zw/",
-                f"https://www.{acronym.lower()}.co.zw/",
-            ])
+        # African country-specific domains (Zimbabwe uses .co.zw)
+        african_domains = [
+            f"https://{acronym.lower()}.co.zw/" if acronym else None,
+            f"https://www.{acronym.lower()}.co.zw/" if acronym else None,
+            f"https://{base_name.lower().replace(' ', '-')}.co.zw/",
+            f"https://www.{base_name.lower().replace(' ', '-')}.co.zw/",
+            f"https://{acronym.lower()}.gov.zw/" if acronym else None,
+            f"https://{base_name.lower().replace(' ', '-')}.gov.zw/",
+        ]
         
-        # Try with full name
-        name_parts = base_name.lower().replace(" ", "-")
-        urls.extend([
-            f"https://{name_parts}.org/",
-            f"https://www.{name_parts}.org/",
-            f"https://{name_parts}.com/",
-        ])
+        # SADC and African regional organizations
+        sadc_domains = [
+            f"https://{acronym.lower()}.sadc.int/" if acronym else None,
+            f"https://www.{acronym.lower()}.sadc.int/" if acronym else None,
+            f"https://sadc.int/",
+        ]
         
-        # Clean and deduplicate
-        urls = list(set(urls))
+        # International domains
+        international_domains = [
+            f"https://{acronym.lower()}.org/" if acronym else None,
+            f"https://www.{acronym.lower()}.org/" if acronym else None,
+            f"https://{acronym.lower()}.com/" if acronym else None,
+            f"https://www.{acronym.lower()}.com/" if acronym else None,
+            f"https://{base_name.lower().replace(' ', '-')}.org/",
+            f"https://www.{base_name.lower().replace(' ', '-')}.org/",
+            f"https://{base_name.lower().replace(' ', '-')}.com/",
+        ]
+        
+        # Combine all domains
+        all_domains = african_domains + sadc_domains + international_domains
+        
+        # Filter out None values and deduplicate
+        urls = list(set([d for d in all_domains if d is not None]))
         return [url for url in urls if self._is_url(url)]
 
     def _extract_acronym(self, name: str) -> Optional[str]:

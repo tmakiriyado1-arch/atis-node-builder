@@ -26,7 +26,7 @@ class GDELTProvider(SearchProvider):
     def __init__(
         self,
         base_url: str = "https://api.gdeltproject.org/api/v2/doc/doc",
-        timeout: float = 30.0,
+        timeout: float = 15.0,
         user_agent: str = "NORAResearchBot/1.0 (+https://github.com/tmakiriyado1-arch/atis-node-builder)",
         max_days_back: int = 365,
     ) -> None:

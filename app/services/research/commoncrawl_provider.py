@@ -6,9 +6,9 @@ without relying on live search engines.
 """
 from __future__ import annotations
 
-import json
+import re
 from typing import Any, Dict, List, Optional
-from urllib.parse import quote, urljoin
+from urllib.parse import quote, urlparse
 
 import httpx
 
@@ -26,7 +26,7 @@ class CommonCrawlProvider(SearchProvider):
     def __init__(
         self,
         index_url: str = "https://index.commoncrawl.org",
-        timeout: float = 30.0,
+        timeout: float = 15.0,
         user_agent: str = "NORAResearchBot/1.0 (+https://github.com/tmakiriyado1-arch/atis-node-builder)",
         max_results: int = 10,
     ) -> None:
@@ -107,7 +107,12 @@ class CommonCrawlProvider(SearchProvider):
                 response = await client.get(self.index_url, params=params)
                 response.raise_for_status()
                 
-                data = response.json()
+                # Handle empty or invalid JSON response
+                try:
+                    data = response.json()
+                except Exception:
+                    return []
+                
                 if not isinstance(data, list):
                     return []
                 
@@ -140,7 +145,12 @@ class CommonCrawlProvider(SearchProvider):
                 response = await client.get(search_url, params=params)
                 response.raise_for_status()
                 
-                data = response.json()
+                # Handle empty or invalid JSON response
+                try:
+                    data = response.json()
+                except Exception:
+                    return []
+                
                 if not isinstance(data, list):
                     return []
                 

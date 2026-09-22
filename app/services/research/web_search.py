@@ -35,11 +35,11 @@ class WebSearchProvider(SearchProvider):
     def __init__(
         self,
         base_url: str = "https://api.duckduckgo.com/",
-        timeout: float = 30.0,
+        timeout: float = 15.0,
         user_agent: Optional[str] = None,
         max_queries_per_search: int = 5,
         min_relevance_score: int = 40,
-        max_retries: int = 2,  # Reduced retries since orchestrator handles failures
+        max_retries: int = 1,  # Reduced retries since orchestrator handles failures
         backoff_factor: float = 1.0,
     ) -> None:
         self.base_url = base_url

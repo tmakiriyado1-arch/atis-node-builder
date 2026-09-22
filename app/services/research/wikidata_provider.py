@@ -26,7 +26,7 @@ class WikidataProvider(SearchProvider):
         self,
         sparql_endpoint: str = "https://query.wikidata.org/sparql",
         api_endpoint: str = "https://www.wikidata.org/w/api.php",
-        timeout: float = 30.0,
+        timeout: float = 15.0,
         user_agent: str = "NORAResearchBot/1.0 (+https://github.com/tmakiriyado1-arch/atis-node-builder)",
     ) -> None:
         self.sparql_endpoint = sparql_endpoint
