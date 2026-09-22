@@ -56,24 +56,44 @@ class WikidataProvider(SearchProvider):
 
         logger.info(f"[WIKIDATA] Searching for '{cleaned_query[:100]}'")
         
-        # First, try to find the entity by label search
-        entity_id = await self._find_entity_by_label(cleaned_query)
+        # Generate query variants for better matching
+        query_variants = self._generate_query_variants(cleaned_query, context)
         
-        if entity_id:
-            # Get full entity information
-            entity_data = await self._get_entity_info(entity_id)
-            if entity_data:
-                results = [self._format_entity_result(entity_data, cleaned_query)]
-                logger.info(f"[WIKIDATA] Found entity: {entity_id}")
-                return results[:max_results]
+        # Try each variant
+        results = []
+        for variant in query_variants:
+            if len(results) >= max_results:
+                break
+            
+            # Try to find the entity by label search
+            entity_id = await self._find_entity_by_label(variant)
+            
+            if entity_id:
+                # Get full entity information
+                entity_data = await self._get_entity_info(entity_id)
+                if entity_data:
+                    result = self._format_entity_result(entity_data, cleaned_query)
+                    results.append(result)
+                    logger.info(f"[WIKIDATA] Found entity: {entity_id}")
         
-        # If direct lookup fails, try SPARQL search
+        # If we have results, return them
+        if results:
+            return results[:max_results]
+        
+        # If direct lookup fails, try SPARQL search with original query
         results = await self._sparql_search(cleaned_query, max_results)
         if results:
             logger.info(f"[WIKIDATA] SPARQL search returned {len(results)} results")
             return results[:max_results]
         
-        return []
+        # Try SPARQL with variants
+        for variant in query_variants:
+            if len(results) >= max_results:
+                break
+            variant_results = await self._sparql_search(variant, max_results - len(results))
+            results.extend(variant_results)
+        
+        return results[:max_results]
 
     async def _find_entity_by_label(self, label: str) -> Optional[str]:
         """Find a Wikidata entity ID by its label."""
@@ -101,15 +121,15 @@ class WikidataProvider(SearchProvider):
         if not search_results:
             return None
         
-        # Return the first result's ID
+        # Return the first result's ID if label matches well
+        for result in search_results:
+            entity_id = result.get("id")
+            if entity_id and self._label_matches(result, label):
+                return entity_id
+        
+        # Fallback: return first result's ID even if label doesn't match perfectly
         first_result = search_results[0]
-        entity_id = first_result.get("id")
-        
-        # Check if the label matches well
-        if entity_id and self._label_matches(first_result, label):
-            return entity_id
-        
-        return None
+        return first_result.get("id")
 
     async def _get_entity_info(self, entity_id: str) -> Optional[Dict[str, Any]]:
         """Get full information for a Wikidata entity."""
@@ -134,7 +154,13 @@ class WikidataProvider(SearchProvider):
             return None
         
         entities = data.get("entities", {})
-        return entities.get(entity_id)
+        entity_data = entities.get(entity_id)
+        
+        # If entity not found or doesn't exist, return None
+        if not entity_data or entity_data.get("missing", False):
+            return None
+        
+        return entity_data
 
     async def _sparql_search(self, query: str, max_results: int) -> List[Dict[str, Any]]:
         """Search Wikidata using SPARQL."""
@@ -202,16 +228,64 @@ class WikidataProvider(SearchProvider):
         query_lower = query.lower()
         
         # Exact match
+        if query_lower == label:
+            return True
+        
+        # Check if query is in label (for partial matches)
         if query_lower in label:
             return True
         
         # Check aliases
         aliases = search_result.get("aliases", [])
         for alias in aliases:
-            if query_lower in alias.lower():
+            if query_lower == alias.lower() or query_lower in alias.lower():
                 return True
         
         return False
+
+    def _generate_query_variants(self, query: str, context: Optional[Dict[str, Any]] = None) -> List[str]:
+        """Generate query variants for better matching."""
+        import re
+        variants = [query]
+        
+        # Extract acronym from parentheses
+        acronym = self._extract_acronym(query)
+        base_name = self._remove_acronym(query)
+        
+        if base_name and base_name != query:
+            variants.append(base_name)
+        if acronym:
+            variants.append(acronym)
+        
+        # Add context-based variants if available
+        if context:
+            country = context.get("country", "")
+            if country:
+                variants.append(f"{base_name} {country}")
+                if acronym:
+                    variants.append(f"{acronym} {country}")
+        
+        # Deduplicate while preserving order
+        seen = set()
+        unique = []
+        for v in variants:
+            if v not in seen:
+                seen.add(v)
+                unique.append(v)
+        return unique
+
+    @staticmethod
+    def _extract_acronym(name: str) -> Optional[str]:
+        """Extract acronym from parentheses at end of name."""
+        match = re.search(r"\s*\(([A-Z]{2,})\)\s*$", name.strip())
+        if match:
+            return match.group(1).strip()
+        return None
+
+    @staticmethod
+    def _remove_acronym(name: str) -> str:
+        """Remove acronym in parentheses from end of name."""
+        return re.sub(r"\s*\([^)]+\)\s*$", "", name.strip())
 
     def _format_entity_result(
         self,

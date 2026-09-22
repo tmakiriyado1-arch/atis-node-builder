@@ -15,6 +15,13 @@ from app.services.research.search_provider import SearchProvider
 from app.logging import logger
 
 
+# List of Wikipedia domain variations for different regions
+WIKIPEDIA_DOMAINS = [
+    "en.wikipedia.org",
+    "www.wikipedia.org",
+]
+
+
 class WikipediaProvider(SearchProvider):
     """Search provider for Wikipedia/MediaWiki content.
     
@@ -58,18 +65,34 @@ class WikipediaProvider(SearchProvider):
         
         results = []
         
-        # First, try direct page lookup (most reliable for known entities)
-        direct_result = await self._try_direct_page(cleaned_query)
-        if direct_result:
-            results.append(direct_result)
-            logger.info(f"[WIKIPEDIA] Found direct page: {direct_result.get('title', '')}")
+        # Generate query variants for better matching
+        query_variants = self._generate_query_variants(cleaned_query, context)
         
-        # If we don't have enough results, try search
+        # Try each variant for direct page lookup
+        for variant in query_variants:
+            if len(results) >= max_results:
+                break
+            direct_result = await self._try_direct_page(variant)
+            if direct_result:
+                results.append(direct_result)
+                logger.info(f"[WIKIPEDIA] Found direct page: {direct_result.get('title', '')}")
+        
+        # If we don't have enough results, try search with original query
         if len(results) < max_results:
             search_results = await self._search_api(cleaned_query, max_results - len(results))
             for result in search_results:
                 if result not in results:
                     results.append(result)
+        
+        # If still not enough, try search with variants
+        if len(results) < max_results:
+            for variant in query_variants:
+                if len(results) >= max_results:
+                    break
+                search_results = await self._search_api(variant, max_results - len(results))
+                for result in search_results:
+                    if result not in results:
+                        results.append(result)
         
         # Limit results
         return results[:max_results]
@@ -215,6 +238,36 @@ class WikipediaProvider(SearchProvider):
             "source": "wikipedia",
         }
 
+    def _generate_query_variants(self, query: str, context: Optional[Dict[str, Any]] = None) -> List[str]:
+        """Generate query variants for better matching."""
+        variants = [query]
+        
+        # Extract acronym from parentheses
+        acronym = self._extract_acronym(query)
+        base_name = self._remove_acronym(query)
+        
+        if base_name and base_name != query:
+            variants.append(base_name)
+        if acronym:
+            variants.append(acronym)
+        
+        # Add context-based variants if available
+        if context:
+            country = context.get("country", "")
+            if country:
+                variants.append(f"{base_name} {country}")
+                if acronym:
+                    variants.append(f"{acronym} {country}")
+        
+        # Deduplicate while preserving order
+        seen = set()
+        unique = []
+        for v in variants:
+            if v not in seen:
+                seen.add(v)
+                unique.append(v)
+        return unique
+
     def _clean_page_title(self, query: str) -> str:
         """Clean a query to be a valid Wikipedia page title."""
         # Remove parentheses and their contents
@@ -224,3 +277,16 @@ class WikipediaProvider(SearchProvider):
         # Normalize whitespace
         cleaned = re.sub(r'\s+', ' ', cleaned).strip()
         return cleaned
+
+    @staticmethod
+    def _extract_acronym(name: str) -> Optional[str]:
+        """Extract acronym from parentheses at end of name."""
+        match = re.search(r"\s*\(([A-Z]{2,})\)\s*$", name.strip())
+        if match:
+            return match.group(1).strip()
+        return None
+
+    @staticmethod
+    def _remove_acronym(name: str) -> str:
+        """Remove acronym in parentheses from end of name."""
+        return re.sub(r"\s*\([^)]+\)\s*$", "", name.strip())
