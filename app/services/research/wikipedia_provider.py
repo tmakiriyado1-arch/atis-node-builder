@@ -146,6 +146,11 @@ class WikipediaProvider(SearchProvider):
         results = []
         query_lower = query.lower()
         
+        # Extract acronym from query if present (do this once outside the loop)
+        acronym = self._extract_acronym(query)
+        base_query = self._remove_acronym(query)
+        base_words = set(base_query.lower().split()) if base_query else set()
+        
         for i, title in enumerate(data[1]):
             if i >= max_results:
                 break
@@ -155,36 +160,41 @@ class WikipediaProvider(SearchProvider):
             if not title or not url:
                 continue
             
+            title_lower = str(title).lower()
+            title_words = set(title_lower.split())
+            
             # Filter out substring matches for acronyms
             # If query contains an acronym in parentheses like "ZERA",
             # filter out results where the acronym appears as a substring in unrelated titles
-            title_lower = str(title).lower()
-            
-            # Extract acronym from query if present
-            acronym = self._extract_acronym(query)
             if acronym:
-                # Check if this result is just a substring match
-                # For example: "Zera Yacob" matches "ZERA" but is not about Zimbabwe Energy Regulatory Authority
-                # We want to filter out results where:
-                # 1. The title contains the acronym as a substring but not as a standalone word
-                # 2. The title doesn't contain words from the base query (without acronym)
-                base_query = self._remove_acronym(query)
-                base_words = set(base_query.lower().split())
-                title_words = set(title_lower.split())
+                # Check if title contains the acronym as a WHOLE WORD (not substring)
+                # Use word boundary regex to match whole words only
+                acronym_pattern = rf"\b{re.escape(acronym.lower())}\b"
+                acronym_in_title = bool(re.search(acronym_pattern, title_lower))
                 
-                # If title contains acronym but no words from base query, it's likely a false match
-                if (acronym.lower() in title_lower and 
-                    len(base_words - title_words) > 0 and
-                    len(base_words & title_words) == 0):
-                    # This is likely a substring false positive, skip it
+                # Also check if acronym appears as substring (but not whole word)
+                acronym_as_substring = (acronym.lower() in title_lower and not acronym_in_title)
+                
+                # Filter out results where:
+                # 1. The acronym appears only as a substring (not whole word) AND
+                # 2. The title doesn't contain any words from the base query
+                if acronym_as_substring and len(base_words & title_words) == 0:
                     logger.info(f"[WIKIPEDIA] Filtering out substring match: {title}")
                     continue
+                
+                # Also filter out results where acronym appears as whole word but title
+                # doesn't contain base query words (likely unrelated page with same acronym)
+                if acronym_in_title and len(base_words & title_words) == 0:
+                    # Check if this is a personal name
+                    if self._is_personal_name(title_lower):
+                        logger.info(f"[WIKIPEDIA] Filtering out personal name with acronym: {title}")
+                        continue
             
             # Also filter out personal names when searching for organizational acronyms
-            if acronym and len(acronym) >= 3:
-                # Check if title looks like a personal name (Firstname Lastname format)
+            # (even without acronym in query)
+            if len(base_words) > 0 and len(base_words & title_words) == 0:
                 if self._is_personal_name(title_lower):
-                    logger.info(f"[WIKIPEDIA] Filtering out personal name: {title}")
+                    logger.info(f"[WIKIPEDIA] Filtering out personal name (no query match): {title}")
                     continue
             
             results.append({
@@ -342,7 +352,8 @@ class WikipediaProvider(SearchProvider):
                        'consortium', 'alliance', 'pool', 'cooperation', 'cooperative',
                        'network', 'association', 'group', 'firm', 'enterprise',
                        'government', 'public', 'state', 'national', 'regional',
-                       'international', 'african', 'southern', 'development']
+                       'international', 'african', 'southern', 'development',
+                       'regulatory', 'energy', 'power', 'electricity']
         
         title_lower = title.lower()
         if any(keyword in title_lower for keyword in org_keywords):
@@ -354,12 +365,18 @@ class WikipediaProvider(SearchProvider):
                               'mary', 'jennifer', 'lisa', 'susan', 'patricia', 'linda',
                               'elizabeth', 'barbara', 'zera', 'zerelda', 'zerai', 'zerachiah',
                               'zerah', 'zeran', 'zerator', 'yacob', 'yisrael',
-                              'amha', 'selassie', 'deres', 'zafara', 'zerafa']
+                              'amha', 'selassie', 'deres', 'zafara', 'zerafa',
+                              'jacob', 'james', 'john', 'joseph', 'joshua', 'jonathan',
+                              'matthew', 'mark', 'luke', 'andrew', 'peter', 'paul',
+                              'stephen', 'steven', 'scott', 'sean', 'seth']
         
         if len(words) >= 2:
             first_word = words[0].lower()
             if first_word in common_first_names:
-                return True
+                # Check if this looks like "Firstname Lastname" pattern
+                # Second word should also be capitalized (proper noun)
+                if words[1][0].isupper():
+                    return True
         
         return False
 
