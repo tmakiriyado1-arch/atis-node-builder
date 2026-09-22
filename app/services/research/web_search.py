@@ -1,7 +1,9 @@
 """Public, HTTP-based search provider backed by DuckDuckGo instant answer JSON with site scraping."""
 from __future__ import annotations
 
+import asyncio
 import json
+import random
 import re
 from typing import Any, Dict, List, Optional
 
@@ -12,21 +14,45 @@ from app.services.research.search_provider import SearchProvider
 
 
 class WebSearchProvider(SearchProvider):
-    """Small public search provider that does not require a paid API key."""
+    """Small public search provider that does not require a paid API key.
+    
+    Features:
+    - Query expansion with context-aware variants
+    - Retry logic with exponential backoff for failed requests
+    - Realistic User-Agent rotation to avoid bot detection
+    - Site scraping for minimal snippets
+    - Adaptive relevance scoring
+    """
+
+    # Realistic browser user agents to avoid bot detection
+    USER_AGENTS = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Safari/605.1.15",
+    ]
 
     def __init__(
         self,
         base_url: str = "https://api.duckduckgo.com/",
-        timeout: float = 10.0,
-        user_agent: str = "NORAResearchBot/1.0 (+https://example.com)",
+        timeout: float = 30.0,
+        user_agent: Optional[str] = None,
         max_queries_per_search: int = 5,
         min_relevance_score: int = 40,
+        max_retries: int = 3,
+        backoff_factor: float = 1.0,
     ) -> None:
         self.base_url = base_url
         self.timeout = timeout
-        self.headers = {"User-Agent": user_agent, "Accept": "application/json"}
         self.max_queries_per_search = max_queries_per_search
         self.min_relevance_score = min_relevance_score
+        self.max_retries = max_retries
+        self.backoff_factor = backoff_factor
+        # Use provided user agent or select a random browser one
+        self.user_agent = user_agent or random.choice(self.USER_AGENTS)
+        self.headers = {"User-Agent": self.user_agent, "Accept": "application/json"}
+        self._client = None  # Lazy-initialized HTTP client for connection pooling
 
     async def search(
         self,
@@ -91,10 +117,26 @@ class WebSearchProvider(SearchProvider):
         
         logger.info(f"[SEARCH] Final results: {len(all_results)} total, {len(high_quality)} high-quality")
         
+        # Close client if we created it during this search
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
+        
         return all_results[:max_results]
+    
+    def _get_client(self) -> httpx.AsyncClient:
+        """Get or create HTTP client with connection pooling."""
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(
+                headers=self.headers,
+                timeout=self.timeout,
+                follow_redirects=True,
+                limits=httpx.Limits(max_keepalive_connections=20, max_connections=100),
+            )
+        return self._client
 
     async def _search_single(self, query: str, max_results: int) -> List[Dict[str, Any]]:
-        """Execute a single DuckDuckGo search."""
+        """Execute a single DuckDuckGo search with retry logic."""
         cleaned_query = (query or "").strip()
         if not cleaned_query:
             return []
@@ -108,18 +150,42 @@ class WebSearchProvider(SearchProvider):
             "pretty": "0",
         }
 
-        try:
-            async with httpx.AsyncClient(headers=self.headers, timeout=self.timeout) as client:
+        # Use lazy-initialized client for connection pooling
+        client = self._get_client()
+        
+        last_exception = None
+        for attempt in range(self.max_retries + 1):
+            try:
                 response = await client.get(self.base_url, params=params)
                 response.raise_for_status()
-        except (httpx.HTTPError, ValueError, TypeError) as e:
-            from app.logging import logger
-            logger.warning(f"[SEARCH] DuckDuckGo request failed for '{cleaned_query[:50]}': {e}")
+                break  # Success, exit retry loop
+            except (httpx.HTTPError, httpx.TimeoutException, httpx.ConnectError) as e:
+                last_exception = e
+                from app.logging import logger
+                if attempt < self.max_retries:
+                    # Exponential backoff with jitter
+                    delay = self.backoff_factor * (2 ** attempt) + random.uniform(0, 0.5)
+                    logger.warning(f"[SEARCH] DuckDuckGo request failed for '{cleaned_query[:50]}' (attempt {attempt + 1}/{self.max_retries + 1}), retrying in {delay:.1f}s: {e}")
+                    await asyncio.sleep(delay)
+                    # Rotate user agent on retry
+                    self.user_agent = random.choice(self.USER_AGENTS)
+                    self.headers = {"User-Agent": self.user_agent, "Accept": "application/json"}
+                    # Recreate client with new headers
+                    if self._client:
+                        await self._client.aclose()
+                        self._client = None
+                    client = self._get_client()
+                else:
+                    logger.warning(f"[SEARCH] DuckDuckGo request failed for '{cleaned_query[:50]}' after {self.max_retries + 1} attempts: {e}")
+        else:
+            # All retries exhausted
             return []
 
         try:
             payload = response.json()
-        except (ValueError, TypeError):
+        except (ValueError, TypeError) as e:
+            from app.logging import logger
+            logger.warning(f"[SEARCH] Failed to parse JSON response for '{cleaned_query[:50]}': {e}")
             return []
 
         if not isinstance(payload, dict):
