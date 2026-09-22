@@ -6,6 +6,7 @@ including labels, aliases, descriptions, official websites, and structured metad
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
@@ -245,7 +246,6 @@ class WikidataProvider(SearchProvider):
 
     def _generate_query_variants(self, query: str, context: Optional[Dict[str, Any]] = None) -> List[str]:
         """Generate query variants for better matching."""
-        import re
         variants = [query]
         
         # Extract acronym from parentheses
