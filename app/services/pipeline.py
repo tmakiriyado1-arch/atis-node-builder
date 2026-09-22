@@ -168,36 +168,54 @@ class EntityPipelineService:
         return asyncio.run(self.run_batch(entities))
 
     async def _enrich_entity(self, entity_name: str, evidence: Sequence[EvidenceRecord], entity: Optional[RITAEntity] = None) -> List[ResearchClaim]:
+        from app.logging import logger as pipeline_logger
+        
         if not evidence:
+            pipeline_logger.warning(f"[ENRICH {entity_name}] No evidence provided")
             return []
 
+        pipeline_logger.info(f"[ENRICH {entity_name}] Processing {len(evidence)} evidence items")
+        
         llm_provider = self.llm_provider
         api_key = getattr(llm_provider, "api_key", None) if llm_provider is not None else None
         
         # Try LLM enrichment if API key is available
         if api_key and self.enricher is not None:
+            pipeline_logger.info(f"[ENRICH {entity_name}] Attempting LLM enrichment with {len(evidence)} evidence items")
             try:
                 claims = await self.enricher(entity_name, list(evidence), api_key=api_key, model=getattr(llm_provider, "model", None) if llm_provider is not None else None)
                 if isinstance(claims, list):
-                    return [claim for claim in claims if isinstance(claim, ResearchClaim)]
-            except Exception:
+                    filtered = [claim for claim in claims if isinstance(claim, ResearchClaim)]
+                    pipeline_logger.info(f"[ENRICH {entity_name}] LLM returned {len(filtered)} claims")
+                    if filtered:
+                        return filtered
+            except Exception as e:
+                pipeline_logger.warning(f"[ENRICH {entity_name}] LLM enrichment failed: {e}")
                 pass
+        else:
+            pipeline_logger.info(f"[ENRICH {entity_name}] No LLM available, using fallback")
         
         # Fallback: use evidence snippets as claims when no LLM is available
         claims = []
-        for evidence_item in evidence:
-            claims.append(
-                ResearchClaim(
-                    claim=evidence_item.snippet,
-                    field_name="entity_profile",
-                    source_url=evidence_item.url,
-                    source_title=evidence_item.title,
-                    evidence_passage=evidence_item.snippet,
-                    source_type="webpage",
-                    confidence=0.0,
-                    extraction_method="search_result",
+        for idx, evidence_item in enumerate(evidence):
+            snippet = getattr(evidence_item, "snippet", None) or ""
+            url = getattr(evidence_item, "url", None) or ""
+            title = getattr(evidence_item, "title", None) or ""
+            pipeline_logger.info(f"[ENRICH {entity_name}] Evidence #{idx}: snippet_len={len(snippet)} url={url[:50] if url else 'None'} title={title[:50] if title else 'None'}")
+            if snippet:
+                claims.append(
+                    ResearchClaim(
+                        claim=snippet,
+                        field_name="entity_profile",
+                        source_url=url,
+                        source_title=title,
+                        evidence_passage=snippet,
+                        source_type="webpage",
+                        confidence=0.0,
+                        extraction_method="search_result",
+                    )
                 )
-            )
+        pipeline_logger.info(f"[ENRICH {entity_name}] Fallback generated {len(claims)} claims from {len(evidence)} evidence items")
         return claims
 
     @staticmethod
