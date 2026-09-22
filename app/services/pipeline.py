@@ -81,10 +81,20 @@ class EntityPipelineService:
         pipeline_logger.info(f"[PIPELINE {source_entity_id}] === STARTING PIPELINE ===")
         pipeline_logger.info(f"[PIPELINE {source_entity_id}] Entity: {entity_name} (type: {getattr(rita_entity, 'rita_type', None) if rita_entity else 'unknown'})")
 
+        # Build rich context for search query expansion
+        search_context = {}
+        if rita_entity is not None:
+            search_context["entity_type"] = getattr(rita_entity, "rita_type", None)
+            search_context["aliases"] = getattr(rita_entity, "aliases", [])
+            search_context["metadata"] = getattr(rita_entity, "metadata", {})
+            # Try to extract country from metadata if available
+            if isinstance(search_context.get("metadata"), dict):
+                search_context["country"] = search_context["metadata"].get("country") or search_context["metadata"].get("Country")
+        
         research_result = await self.research_engine.research(
             entity_name,
             entity_type=getattr(rita_entity, "rita_type", None) if rita_entity is not None else None,
-            context=getattr(rita_entity, "metadata", None) if rita_entity is not None else None,
+            context=search_context if search_context else None,
         )
         pipeline_logger.info(f"[PIPELINE {source_entity_id}] Research: status={research_result.status}, evidence_count={len(research_result.evidence)}")
         

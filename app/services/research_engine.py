@@ -159,6 +159,8 @@ class ResearchEngine:
         context: Optional[str] = None,
     ) -> ResearchResult:
         """Search for public evidence, deduplicate sources, and return structured results."""
+        from app.logging import logger
+        
         cleaned_name = (entity_name or "").strip()
         result = ResearchResult(entity_name=cleaned_name or "", status="failed")
 
@@ -170,13 +172,41 @@ class ResearchEngine:
             result.error_message = "No search provider is configured for research"
             return result
 
+        logger.info(f"[RESEARCH {cleaned_name}] Starting research, entity_type={entity_type}")
+        
+        # Build search context for query expansion
+        search_context = {
+            "entity_name": cleaned_name,
+            "entity_type": entity_type,
+        }
+        
+        # If context is a string, try to parse it as JSON or use as-is
+        if context:
+            if isinstance(context, str):
+                try:
+                    import json
+                    context_dict = json.loads(context)
+                    if isinstance(context_dict, dict):
+                        search_context.update(context_dict)
+                except (ValueError, TypeError):
+                    # context is just a string, add it as a keyword
+                    search_context["keywords"] = context
+            elif isinstance(context, dict):
+                search_context.update(context)
+        
         queries = self.generate_queries(cleaned_name, entity_type=entity_type, context=context, max_queries=4)
+        logger.info(f"[RESEARCH {cleaned_name}] Generated {len(queries)} queries: {queries}")
+        
         evidence_records: List[EvidenceRecord] = []
         claims: List[ResearchClaim] = []
 
         for query in queries:
             try:
-                search_results = await self.search_provider.search(query, max_results=5)
+                search_results = await self.search_provider.search(
+                    query, 
+                    max_results=5,
+                    context=search_context
+                )
             except Exception as exc:  # pragma: no cover - exercised via provider harness
                 result.error_message = f"Search provider failed while researching '{cleaned_name}': {exc}"
                 result.summary = "Research failed before useful evidence could be collected."
@@ -195,6 +225,7 @@ class ResearchEngine:
                 )
                 if record is not None:
                     evidence_records.append(record)
+                    logger.info(f"[RESEARCH {cleaned_name}] Found evidence: {record.title[:50] if record.title else 'None'} - {record.url[:60] if record.url else 'None'}")
 
         deduped_evidence = deduplicate_evidence(evidence_records)
         if not deduped_evidence:
