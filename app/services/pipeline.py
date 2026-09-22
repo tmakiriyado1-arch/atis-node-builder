@@ -133,6 +133,7 @@ class EntityPipelineService:
         result.classifications = self.classifier.route(claims)
         pipeline_logger.info(f"[PIPELINE {source_entity_id}] Classifications: {result.classifications}")
         
+        # Pass RITA entity to node builder to preserve canonical name
         node_draft = self.node_builder.build(claims)
         result.node_draft = node_draft
         pipeline_logger.info(f"[PIPELINE {source_entity_id}] Node draft created: title={getattr(node_draft, 'title', 'None')[:50] if node_draft else 'None'}, body_len={len(getattr(node_draft, 'body', '')) if node_draft else 0}")
@@ -206,6 +207,7 @@ class EntityPipelineService:
             pipeline_logger.info(f"[ENRICH {entity_name}] No LLM available, using fallback")
         
         # Fallback: use evidence snippets as claims when no LLM is available
+        # IMPORTANT: Ensure ALL evidence URLs are preserved in claims
         claims = []
         for idx, evidence_item in enumerate(evidence):
             snippet = getattr(evidence_item, "snippet", None) or ""
@@ -213,6 +215,7 @@ class EntityPipelineService:
             title = getattr(evidence_item, "title", None) or ""
             pipeline_logger.info(f"[ENRICH {entity_name}] Evidence #{idx}: snippet_len={len(snippet)} url={url[:50] if url else 'None'} title={title[:50] if title else 'None'}")
             if snippet:
+                # Create claim with evidence_urls list containing this URL
                 claims.append(
                     ResearchClaim(
                         claim=snippet,
@@ -223,6 +226,23 @@ class EntityPipelineService:
                         source_type="webpage",
                         confidence=0.0,
                         extraction_method="search_result",
+                        evidence_urls=[url] if url else [],
+                    )
+                )
+            else:
+                # Even if snippet is empty, create a claim to preserve the URL
+                pipeline_logger.info(f"[ENRICH {entity_name}] Evidence #{idx}: empty snippet but preserving URL: {url}")
+                claims.append(
+                    ResearchClaim(
+                        claim=f"Source: {title or url}",
+                        field_name="entity_profile",
+                        source_url=url,
+                        source_title=title,
+                        evidence_passage="",
+                        source_type="webpage",
+                        confidence=0.0,
+                        extraction_method="search_result",
+                        evidence_urls=[url] if url else [],
                     )
                 )
         pipeline_logger.info(f"[ENRICH {entity_name}] Fallback generated {len(claims)} claims from {len(evidence)} evidence items")

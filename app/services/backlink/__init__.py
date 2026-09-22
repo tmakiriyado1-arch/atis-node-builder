@@ -248,7 +248,8 @@ class BacklinkGenerator:
         if self.queue is not None:
             for mention_text, _, start, end in self.extractor.extract_mentions(summary):
                 resolution = self.resolver.resolve(mention_text)
-                if resolution.state.value == "NEW_ENTITY":
+                # NEW_ENTITY means the entity is new and should be queued for research
+                if resolution.state == ResolutionState.NEW_ENTITY:
                     self._queue_unresolved(
                         mention_text,
                         source_node,

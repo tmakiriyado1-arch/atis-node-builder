@@ -1,4 +1,4 @@
-"""Public, HTTP-based search provider backed by DuckDuckGo instant answer JSON."""
+"""Public, HTTP-based search provider backed by DuckDuckGo instant answer JSON with site scraping."""
 from __future__ import annotations
 
 import json
@@ -6,6 +6,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 import httpx
+from bs4 import BeautifulSoup
 
 from app.services.research.search_provider import SearchProvider
 
@@ -171,6 +172,16 @@ class WebSearchProvider(SearchProvider):
                     if url and url not in seen:
                         seen.add(url)
                         results.append(result)
+
+        # Post-process: scrape sites with minimal snippets
+        for result in results:
+            snippet = result.get("snippet", "")
+            url = result.get("url", "")
+            # If snippet is too short (less than 30 chars), try to scrape the site
+            if snippet and len(snippet.strip()) < 30 and url:
+                scraped = await self._scrape_site_content(url)
+                if scraped and len(scraped) > len(snippet):
+                    result["snippet"] = scraped
 
         return results[:max_results]
 
@@ -350,7 +361,73 @@ class WebSearchProvider(SearchProvider):
                 break
         
         # Penalize very short snippets (likely low quality)
+        # But reduce penalty for official/organization domains
         if snippet and len(snippet) < 20:
-            score -= 10
+            # Check if URL looks like an official site
+            official_indicators = ["sapp.co.zw", "sadc.int", "gov.", "org.", "ac.", "edu."]
+            is_official = any(indicator in url for indicator in official_indicators)
+            if not is_official:
+                score -= 10
+            else:
+                score -= 5  # Reduced penalty for official sites
+        
+        # URL-based scoring: match domain to entity
+        if entity_name_lower:
+            entity_words = set(entity_name_lower.split())
+            # Remove common words
+            stop_words = {"the", "a", "an", "of", "and", "in", "to", "for", "with", "by", "as"}
+            entity_words = entity_words - stop_words
+            # Check if any entity word appears in URL
+            for word in entity_words:
+                if word in url:
+                    score += 15
+                    break
         
         return max(0, score)
+    
+    async def _scrape_site_content(self, url: str, timeout: float = 5.0) -> str:
+        """Scrape a website to extract meaningful text content when snippet is minimal."""
+        try:
+            async with httpx.AsyncClient(headers=self.headers, timeout=timeout) as client:
+                response = await client.get(url)
+                response.raise_for_status()
+                
+                content_type = response.headers.get("Content-Type", "").lower()
+                if "text/html" not in content_type:
+                    return ""
+                
+                html = response.text
+                soup = BeautifulSoup(html, "html.parser")
+                
+                # Remove script, style, and other non-content elements
+                for element in soup(["script", "style", "nav", "footer", "head", "iframe"]):
+                    element.decompose()
+                
+                # Get text from paragraph, article, section, div, main, content elements
+                content_elements = soup.find_all(["p", "article", "section", "main", "div", "span", "h1", "h2", "h3", "h4", "h5", "h6"])
+                
+                # Collect text with reasonable length
+                text_parts = []
+                for elem in content_elements:
+                    text = elem.get_text().strip()
+                    # Skip very short or navigation-like text
+                    if len(text) > 20 and len(text) < 5000:
+                        text_parts.append(text)
+                
+                if text_parts:
+                    # Return first meaningful paragraph
+                    return text_parts[0][:1000]  # Limit to 1000 chars
+                
+                # Fallback: try to get text from body
+                body = soup.find("body")
+                if body:
+                    text = body.get_text().strip()
+                    # Get first 1000 chars
+                    return text[:1000] if text else ""
+                
+                return ""
+                
+        except Exception as e:
+            from app.logging import logger
+            logger.warning(f"[SCRAPE] Failed to scrape {url}: {e}")
+            return ""

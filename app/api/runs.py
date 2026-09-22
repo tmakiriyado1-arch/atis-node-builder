@@ -85,6 +85,8 @@ def _public_status(backend_status: Optional[str]) -> str:
         return "failed"
     if normalized in {"ambiguous", "needs_review", "pending"}:
         return "needs_review"
+    if normalized in {"new_entity"}:
+        return "new_entity"
     return "idle"
 
 
