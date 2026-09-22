@@ -170,9 +170,13 @@ async def _execute_pipeline_run(run_id: str) -> None:
     if record is None:
         return
 
+    logger.info(f"[PIPELINE {run_id}] Starting for entity_id={record.get('entity_id')}")
+
     try:
         entity = RITAIntakeService().get_entity_by_id(record["entity_id"])
+        logger.info(f"[PIPELINE {run_id}] Entity loaded: {entity.entity_id} - {entity.name}")
     except Exception as exc:  # pragma: no cover - depends on configured intake source
+        logger.error(f"[PIPELINE {run_id}] Entity lookup failed: {exc}")
         record["backend_status"] = "failed"
         record["status"] = "failed"
         record["error"] = _build_error("ENTITY_NOT_FOUND", str(exc), "entity_lookup")
@@ -180,8 +184,11 @@ async def _execute_pipeline_run(run_id: str) -> None:
         return
 
     try:
+        logger.info(f"[PIPELINE {run_id}] Starting pipeline execution")
         result = await EntityPipelineService().run(entity)
+        logger.info(f"[PIPELINE {run_id}] Pipeline completed with status={result.status}")
     except Exception as exc:
+        logger.error(f"[PIPELINE {run_id}] Pipeline execution failed: {exc}")
         record["backend_status"] = "failed"
         record["status"] = "failed"
         record["error"] = _build_error("PIPELINE_FAILED", str(exc), "pipeline")
@@ -189,6 +196,16 @@ async def _execute_pipeline_run(run_id: str) -> None:
         return
 
     record["entity"] = _entity_summary(entity)
+    
+    # Log result details
+    logger.info(f"[PIPELINE {run_id}] Evidence count: {len(result.evidence) if result.evidence else 0}")
+    logger.info(f"[PIPELINE {run_id}] Claims count: {len(result.claims) if result.claims else 0}")
+    logger.info(f"[PIPELINE {run_id}] Has node_draft: {result.node_draft is not None}")
+    logger.info(f"[PIPELINE {run_id}] Has canonical_row: {result.canonical_row is not None}")
+    logger.info(f"[PIPELINE {run_id}] Has import_bundle: {result.import_bundle is not None}")
+    if result.error_message:
+        logger.warning(f"[PIPELINE {run_id}] Pipeline error: {result.error_message}")
+
     record["result"] = _result_payload(result)
     record["backend_status"] = getattr(result, "status", "failed")
     record["status"] = _public_status(getattr(result, "status", "failed"))

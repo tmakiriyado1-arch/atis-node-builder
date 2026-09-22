@@ -73,53 +73,76 @@ class EntityPipelineService:
                 error_message="entity is required",
             )
 
+        from app.logging import logger as pipeline_logger
+        
         source_entity_id = None if rita_entity is None else getattr(rita_entity, "entity_id", None)
         result = PipelineResult(entity=rita_entity or entity_name, status="pending", source_entity_id=source_entity_id)
+        
+        pipeline_logger.info(f"[PIPELINE {source_entity_id}] === STARTING PIPELINE ===")
+        pipeline_logger.info(f"[PIPELINE {source_entity_id}] Entity: {entity_name} (type: {getattr(rita_entity, 'rita_type', None) if rita_entity else 'unknown'})")
 
         research_result = await self.research_engine.research(
             entity_name,
             entity_type=getattr(rita_entity, "rita_type", None) if rita_entity is not None else None,
             context=getattr(rita_entity, "metadata", None) if rita_entity is not None else None,
         )
+        pipeline_logger.info(f"[PIPELINE {source_entity_id}] Research: status={research_result.status}, evidence_count={len(research_result.evidence)}")
+        
         result.evidence = deduplicate_evidence(research_result.evidence or [])
         result.resolution = self.resolver.resolve(entity_name, entity_type=getattr(rita_entity, "rita_type", None) if rita_entity is not None else None)
+        pipeline_logger.info(f"[PIPELINE {source_entity_id}] Resolution: state={result.resolution.state}, entity_id={result.resolution.entity_id}")
 
         if research_result.status != "completed" or not result.evidence:
+            pipeline_logger.error(f"[PIPELINE {source_entity_id}] RESEARCH FAILED: {research_result.error_message}")
             result.status = "failed"
             result.error_message = research_result.error_message or "Research did not produce usable evidence."
             return result
 
         claims = await self._enrich_entity(entity_name, result.evidence, entity=rita_entity)
+        pipeline_logger.info(f"[PIPELINE {source_entity_id}] Enrichment: claims_count={len(claims)}")
         result.claims = claims
         if not claims:
+            pipeline_logger.error(f"[PIPELINE {source_entity_id}] NO CLAIMS GENERATED from {len(result.evidence)} evidence items")
             result.status = "insufficient"
             result.error_message = "No claim candidates were produced from the supplied evidence."
             return result
 
         if result.resolution.state in {ResolutionState.AMBIGUOUS, ResolutionState.CONFLICT, ResolutionState.POSSIBLE_MATCH}:
+            pipeline_logger.warning(f"[PIPELINE {source_entity_id}] AMBIGUOUS RESOLUTION: state={result.resolution.state}, candidates={len(result.resolution.candidates)}")
             result.status = "ambiguous"
             result.error_message = result.resolution.reasoning or "Subject identity could not be resolved confidently."
             return result
 
         if result.resolution.state not in {ResolutionState.RESOLVED, ResolutionState.NEW_ENTITY}:
+            pipeline_logger.error(f"[PIPELINE {source_entity_id}] RESOLUTION FAILED: state={result.resolution.state}")
             result.status = "failed"
             result.error_message = result.resolution.reasoning or "Subject identity resolution failed."
             return result
 
+        pipeline_logger.info(f"[PIPELINE {source_entity_id}] Resolution: RESOLVED as {result.resolution.state}, entity_id={result.resolution.entity_id}")
         result.classifications = self.classifier.route(claims)
+        pipeline_logger.info(f"[PIPELINE {source_entity_id}] Classifications: {result.classifications}")
+        
         node_draft = self.node_builder.build(claims)
         result.node_draft = node_draft
+        pipeline_logger.info(f"[PIPELINE {source_entity_id}] Node draft created: {len(node_draft.properties) if node_draft else 0} properties")
 
         try:
             row = self.row_builder.build(node_draft)
         except ValueError as exc:
+            pipeline_logger.error(f"[PIPELINE {source_entity_id}] Canonical row build failed: {exc}")
             result.status = "failed"
             result.error_message = str(exc)
             return result
 
         result.canonical_row = row
+        pipeline_logger.info(f"[PIPELINE {source_entity_id}] Canonical row created: {row.node_id if row else 'None'}")
+        
         result.import_bundle = ImportBundle.from_rows([row])
+        pipeline_logger.info(f"[PIPELINE {source_entity_id}] Import bundle created: {len(result.import_bundle.rows) if result.import_bundle else 0} rows")
+        
         result.status = "completed"
+        pipeline_logger.info(f"[PIPELINE {source_entity_id}] === PIPELINE COMPLETED ===")
         return result
 
     async def run_batch(self, entities: Sequence[RITAEntity | str]) -> list[PipelineResult]:
@@ -176,7 +199,6 @@ class EntityPipelineService:
                 )
             )
         return claims
-        return []
 
     @staticmethod
     def _coerce_entity(entity: RITAEntity | str) -> tuple[str, Optional[RITAEntity]]:
