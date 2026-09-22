@@ -1,8 +1,11 @@
-"""Public, HTTP-based search provider backed by DuckDuckGo instant answer JSON with site scraping."""
+"""Public, HTTP-based search provider backed by DuckDuckGo instant answer JSON with site scraping.
+
+This provider is now one of many in the multi-provider architecture.
+User-Agent rotation has been removed as it doesn't solve IP-level blocking.
+"""
 from __future__ import annotations
 
 import asyncio
-import json
 import random
 import re
 from typing import Any, Dict, List, Optional
@@ -14,24 +17,20 @@ from app.services.research.search_provider import SearchProvider
 
 
 class WebSearchProvider(SearchProvider):
-    """Small public search provider that does not require a paid API key.
+    """DuckDuckGo Instant Answer search provider.
+    
+    This is now one provider among many. Failure of this provider
+    does not cause pipeline failure - the orchestrator will try others.
     
     Features:
     - Query expansion with context-aware variants
-    - Retry logic with exponential backoff for failed requests
-    - Realistic User-Agent rotation to avoid bot detection
+    - Retry logic with exponential backoff for transient failures
     - Site scraping for minimal snippets
     - Adaptive relevance scoring
     """
 
-    # Realistic browser user agents to avoid bot detection
-    USER_AGENTS = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Safari/605.1.15",
-    ]
+    # Single, honest User-Agent - no rotation (doesn't help with IP blocking)
+    USER_AGENT = "NORAResearchBot/1.0 (+https://github.com/tmakiriyado1-arch/atis-node-builder)"
 
     def __init__(
         self,
@@ -40,7 +39,7 @@ class WebSearchProvider(SearchProvider):
         user_agent: Optional[str] = None,
         max_queries_per_search: int = 5,
         min_relevance_score: int = 40,
-        max_retries: int = 3,
+        max_retries: int = 2,  # Reduced retries since orchestrator handles failures
         backoff_factor: float = 1.0,
     ) -> None:
         self.base_url = base_url
@@ -49,8 +48,8 @@ class WebSearchProvider(SearchProvider):
         self.min_relevance_score = min_relevance_score
         self.max_retries = max_retries
         self.backoff_factor = backoff_factor
-        # Use provided user agent or select a random browser one
-        self.user_agent = user_agent or random.choice(self.USER_AGENTS)
+        # Use provided user agent or the default honest one
+        self.user_agent = user_agent or self.USER_AGENT
         self.headers = {"User-Agent": self.user_agent, "Accept": "application/json"}
         self._client = None  # Lazy-initialized HTTP client for connection pooling
 
@@ -167,16 +166,15 @@ class WebSearchProvider(SearchProvider):
                     delay = self.backoff_factor * (2 ** attempt) + random.uniform(0, 0.5)
                     logger.warning(f"[SEARCH] DuckDuckGo request failed for '{cleaned_query[:50]}' (attempt {attempt + 1}/{self.max_retries + 1}), retrying in {delay:.1f}s: {e}")
                     await asyncio.sleep(delay)
-                    # Rotate user agent on retry
-                    self.user_agent = random.choice(self.USER_AGENTS)
-                    self.headers = {"User-Agent": self.user_agent, "Accept": "application/json"}
-                    # Recreate client with new headers
+                    # Recreate client (no User-Agent rotation - it doesn't help with IP blocking)
                     if self._client:
                         await self._client.aclose()
                         self._client = None
                     client = self._get_client()
                 else:
                     logger.warning(f"[SEARCH] DuckDuckGo request failed for '{cleaned_query[:50]}' after {self.max_retries + 1} attempts: {e}")
+                    # Mark as provider unavailable - orchestrator will handle this
+                    raise
         else:
             # All retries exhausted
             return []

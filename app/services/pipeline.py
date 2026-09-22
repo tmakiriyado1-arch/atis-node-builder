@@ -14,6 +14,7 @@ from app.services.node_draft_builder import NodeDraftBuilder
 from app.services.research.evidence import EvidenceRecord, deduplicate_evidence
 from app.services.research.mistral_enrichment import enrich_evidence_with_mistral
 from app.services.research.search_provider import SearchProvider
+from app.services.research.search_orchestrator import ResearchStatus, SearchOrchestrator
 from app.services.research_engine import ResearchClaim, ResearchEngine, ResearchResult
 from app.services.rita_intake import RITAEntity
 
@@ -49,15 +50,48 @@ class EntityPipelineService:
         node_builder: Optional[NodeDraftBuilder] = None,
         row_builder: Optional[CanonicalNodeRowBuilder] = None,
         enricher: Optional[Any] = None,
+        orchestrator: Optional[Any] = None,
     ) -> None:
         from app import config
         from app.services.research.web_search import WebSearchProvider
+        from app.services.research.search_orchestrator import SearchOrchestrator
+        from app.services.research.wikipedia_provider import WikipediaProvider
+        from app.services.research.wikidata_provider import WikidataProvider
+        from app.services.research.gdelt_provider import GDELTProvider
+        from app.services.research.direct_site_crawler import DirectSiteCrawler
+        from app.services.research.commoncrawl_provider import CommonCrawlProvider
         
         self.registry = registry or EntityRegistry()
         self.resolver = resolver or EntityResolver(self.registry)
         self.search_provider = search_provider or WebSearchProvider()
         self.llm_provider = llm_provider or type('LLMProvider', (), {'api_key': config.MISTRAL_API_KEY, 'model': config.MISTRAL_MODEL})()
-        self.research_engine = research_engine or ResearchEngine(self.search_provider, llm_provider=self.llm_provider)
+        
+        # Create orchestrator with multiple providers if not provided
+        if orchestrator is not None:
+            self.orchestrator = orchestrator
+        else:
+            providers = [
+                WikipediaProvider(),
+                WikidataProvider(),
+                GDELTProvider(),
+                DirectSiteCrawler(),
+                CommonCrawlProvider(),
+                search_provider or WebSearchProvider(),
+            ]
+            self.orchestrator = SearchOrchestrator(
+                providers=providers,
+                min_evidence=3,
+                min_high_quality=2,
+                timeout_per_provider=30.0,
+                max_concurrent_providers=3,
+            )
+        
+        # ResearchEngine will use the orchestrator internally
+        self.research_engine = research_engine or ResearchEngine(
+            search_provider=self.search_provider,
+            llm_provider=self.llm_provider,
+            orchestrator=self.orchestrator,
+        )
         self.classifier = classifier or ClaimClassifier(registry=self.registry, resolver=self.resolver)
         self.node_builder = node_builder or NodeDraftBuilder(registry=self.registry, resolver=self.resolver)
         self.row_builder = row_builder or CanonicalNodeRowBuilder()
@@ -101,6 +135,10 @@ class EntityPipelineService:
         result.evidence = deduplicate_evidence(research_result.evidence or [])
         result.resolution = self.resolver.resolve(entity_name, entity_type=getattr(rita_entity, "rita_type", None) if rita_entity is not None else None)
         pipeline_logger.info(f"[PIPELINE {source_entity_id}] Resolution: state={result.resolution.state}, entity_id={result.resolution.entity_id}")
+        
+        # Log orchestrator status if available
+        if hasattr(research_result, 'research_status'):
+            pipeline_logger.info(f"[PIPELINE {source_entity_id}] Research status={research_result.research_status}, succeeded={len(research_result.providers_succeeded)}, failed={len(research_result.providers_failed)}")
 
         if research_result.status != "completed" or not result.evidence:
             pipeline_logger.error(f"[PIPELINE {source_entity_id}] RESEARCH FAILED: {research_result.error_message}")

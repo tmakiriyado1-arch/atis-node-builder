@@ -4,12 +4,19 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from app import config
 from app.services.research.evidence import EvidenceRecord, deduplicate_evidence, normalize_search_result
 from app.services.research.mistral_enrichment import enrich_evidence_with_mistral
+from app.services.research.search_orchestrator import ResearchStatus, SearchOrchestrator
 from app.services.research.search_provider import SearchProvider
+from app.services.research.web_search import WebSearchProvider
+from app.services.research.wikipedia_provider import WikipediaProvider
+from app.services.research.wikidata_provider import WikidataProvider
+from app.services.research.gdelt_provider import GDELTProvider
+from app.services.research.direct_site_crawler import DirectSiteCrawler
+from app.services.research.commoncrawl_provider import CommonCrawlProvider
 
 
 @dataclass
@@ -65,6 +72,10 @@ class ResearchResult:
     status: str = "completed"
     error_message: Optional[str] = None
     evidence: List[EvidenceRecord] = field(default_factory=list)
+    research_status: ResearchStatus = ResearchStatus.COMPLETE
+    providers_attempted: List[str] = field(default_factory=list)
+    providers_succeeded: List[str] = field(default_factory=list)
+    providers_failed: List[str] = field(default_factory=list)
 
     def add_claim(
         self,
@@ -99,11 +110,26 @@ class ResearchResult:
 
 
 class ResearchEngine:
-    """Deterministic research pipeline using a search provider and evidence snippets."""
+    """Deterministic research pipeline using a search provider and evidence snippets.
+    
+    This engine now uses a SearchOrchestrator with multiple providers for
+    production-grade reliability. If no orchestrator is provided, it creates
+    one with the default provider set.
+    """
 
-    def __init__(self, search_provider: Optional[SearchProvider], llm_provider: Optional[Any] = None):
+    def __init__(
+        self,
+        search_provider: Optional[SearchProvider] = None,
+        llm_provider: Optional[Any] = None,
+        orchestrator: Optional[SearchOrchestrator] = None,
+    ):
         self.search_provider = search_provider
         self.llm_provider = llm_provider
+        self.orchestrator = orchestrator
+        
+        # If no orchestrator provided, create one with default providers
+        if self.orchestrator is None:
+            self.orchestrator = self._create_default_orchestrator(search_provider)
 
     def generate_queries(
         self,
@@ -151,6 +177,41 @@ class ResearchEngine:
 
         return queries[:max_queries]
 
+    def _create_default_orchestrator(
+        self,
+        fallback_provider: Optional[SearchProvider] = None,
+    ) -> SearchOrchestrator:
+        """Create a default SearchOrchestrator with multiple providers."""
+        providers = []
+        
+        # Add Wikipedia provider (deterministic fallback)
+        providers.append(WikipediaProvider())
+        
+        # Add Wikidata provider (identity resolution)
+        providers.append(WikidataProvider())
+        
+        # Add GDELT provider (news/document coverage)
+        providers.append(GDELTProvider())
+        
+        # Add Direct Site Crawler (official sources)
+        providers.append(DirectSiteCrawler())
+        
+        # Add Common Crawl provider (deep fallback)
+        providers.append(CommonCrawlProvider())
+        
+        # Add DuckDuckGo as one provider (not the only one)
+        # Use simplified version without User-Agent rotation
+        ddg_provider = fallback_provider or WebSearchProvider()
+        providers.append(ddg_provider)
+        
+        return SearchOrchestrator(
+            providers=providers,
+            min_evidence=3,
+            min_high_quality=2,
+            timeout_per_provider=30.0,
+            max_concurrent_providers=3,
+        )
+
     async def research(
         self,
         entity_name: str,
@@ -158,7 +219,12 @@ class ResearchEngine:
         fields_to_research: Optional[List[str]] = None,
         context: Optional[str] = None,
     ) -> ResearchResult:
-        """Search for public evidence, deduplicate sources, and return structured results."""
+        """Search for public evidence, deduplicate sources, and return structured results.
+        
+        This method now uses the SearchOrchestrator to query multiple providers
+        concurrently, ensuring that failure of any single provider (including DuckDuckGo)
+        does not cause the entire research to fail.
+        """
         from app.logging import logger
         
         cleaned_name = (entity_name or "").strip()
@@ -166,10 +232,6 @@ class ResearchEngine:
 
         if not cleaned_name:
             result.error_message = "entity_name is required for research"
-            return result
-
-        if self.search_provider is None:
-            result.error_message = "No search provider is configured for research"
             return result
 
         logger.info(f"[RESEARCH {cleaned_name}] Starting research, entity_type={entity_type}")
@@ -194,40 +256,70 @@ class ResearchEngine:
             elif isinstance(context, dict):
                 search_context.update(context)
         
-        queries = self.generate_queries(cleaned_name, entity_type=entity_type, context=context, max_queries=4)
-        logger.info(f"[RESEARCH {cleaned_name}] Generated {len(queries)} queries: {queries}")
-        
-        evidence_records: List[EvidenceRecord] = []
-        claims: List[ResearchClaim] = []
-
-        for query in queries:
-            try:
-                search_results = await self.search_provider.search(
-                    query, 
-                    max_results=5,
-                    context=search_context
-                )
-            except Exception as exc:  # pragma: no cover - exercised via provider harness
-                result.error_message = f"Search provider failed while researching '{cleaned_name}': {exc}"
-                result.summary = "Research failed before useful evidence could be collected."
+        # Use the orchestrator to search across multiple providers
+        if self.orchestrator is not None:
+            logger.info(f"[RESEARCH {cleaned_name}] Using SearchOrchestrator with {len(self.orchestrator.providers)} providers")
+            orchestrator_result = await self.orchestrator.search(
+                query=cleaned_name,
+                context=search_context,
+                max_results=10,
+            )
+            
+            # Update result with orchestrator status
+            result.research_status = orchestrator_result.status
+            result.providers_attempted = orchestrator_result.providers_attempted
+            result.providers_succeeded = orchestrator_result.providers_succeeded
+            result.providers_failed = orchestrator_result.providers_failed
+            
+            # Get evidence from orchestrator
+            deduped_evidence = orchestrator_result.evidence
+            
+            logger.info(f"[RESEARCH {cleaned_name}] Orchestrator status={orchestrator_result.status}, evidence={len(deduped_evidence)}, succeeded={len(orchestrator_result.providers_succeeded)}, failed={len(orchestrator_result.providers_failed)}")
+            
+            # Log which providers succeeded/failed
+            if orchestrator_result.providers_failed:
+                logger.warning(f"[RESEARCH {cleaned_name}] Providers failed: {orchestrator_result.providers_failed}")
+            
+        else:
+            # Fallback to single provider (legacy behavior)
+            logger.info(f"[RESEARCH {cleaned_name}] Using legacy single provider")
+            if self.search_provider is None:
+                result.error_message = "No search provider is configured for research"
                 return result
+            
+            queries = self.generate_queries(cleaned_name, entity_type=entity_type, context=context, max_queries=4)
+            logger.info(f"[RESEARCH {cleaned_name}] Generated {len(queries)} queries: {queries}")
+            
+            evidence_records: List[EvidenceRecord] = []
+            
+            for query in queries:
+                try:
+                    search_results = await self.search_provider.search(
+                        query, 
+                        max_results=5,
+                        context=search_context
+                    )
+                except Exception as exc:
+                    result.error_message = f"Search provider failed while researching '{cleaned_name}': {exc}"
+                    result.summary = "Research failed before useful evidence could be collected."
+                    return result
 
-            if not isinstance(search_results, list):
-                continue
+                if not isinstance(search_results, list):
+                    continue
 
-            for item in search_results:
-                record = normalize_search_result(
-                    item,
-                    entity_id=None,
-                    entity_name=cleaned_name,
-                    query=query,
-                    source="public_web_search",
-                )
-                if record is not None:
-                    evidence_records.append(record)
-                    logger.info(f"[RESEARCH {cleaned_name}] Found evidence: {record.title[:50] if record.title else 'None'} - {record.url[:60] if record.url else 'None'}")
+                for item in search_results:
+                    record = normalize_search_result(
+                        item,
+                        entity_id=None,
+                        entity_name=cleaned_name,
+                        query=query,
+                        source="public_web_search",
+                    )
+                    if record is not None:
+                        evidence_records.append(record)
+                        logger.info(f"[RESEARCH {cleaned_name}] Found evidence: {record.title[:50] if record.title else 'None'} - {record.url[:60] if record.url else 'None'}")
 
-        deduped_evidence = deduplicate_evidence(evidence_records)
+            deduped_evidence = deduplicate_evidence(evidence_records)
         if not deduped_evidence:
             result.error_message = (
                 f"No usable search results were returned for '{cleaned_name}'. "
