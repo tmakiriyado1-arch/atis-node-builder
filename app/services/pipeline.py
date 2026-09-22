@@ -146,7 +146,7 @@ class EntityPipelineService:
             return result
 
         result.canonical_row = row
-        pipeline_logger.info(f"[PIPELINE {source_entity_id}] Canonical row created: {row.node_id if row else 'None'}")
+        pipeline_logger.info(f"[PIPELINE {source_entity_id}] Canonical row created: uid={getattr(row, 'uid', 'None') if row else 'None'}")
         
         result.import_bundle = ImportBundle.from_rows([row])
         pipeline_logger.info(f"[PIPELINE {source_entity_id}] Import bundle created: {len(result.import_bundle.rows) if result.import_bundle else 0} rows")
