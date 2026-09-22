@@ -57,6 +57,20 @@ class WebSearchProvider(SearchProvider):
         results: List[Dict[str, Any]] = []
         seen: set[str] = set()
 
+        # First, check Abstract - this is the most direct result
+        abstract_text = payload.get("AbstractText")
+        abstract_url = payload.get("AbstractURL")
+        abstract_source = payload.get("Heading") or "Result"
+        if abstract_url and abstract_url not in seen:
+            seen.add(abstract_url)
+            results.append(
+                {
+                    "title": str(abstract_source),
+                    "url": str(abstract_url),
+                    "snippet": str(abstract_text or ""),
+                }
+            )
+
         for item in payload.get("RelatedTopics", []):
             if isinstance(item, dict):
                 result = self._coerce_item(item)
@@ -86,44 +100,7 @@ class WebSearchProvider(SearchProvider):
                         seen.add(url)
                         results.append(result)
 
-        # Check Definition
-        definition_text = payload.get("Definition")
-        definition_url = payload.get("DefinitionSource") or payload.get("DefinitionURL")
-        if definition_text and definition_url:
-            if definition_url not in seen:
-                seen.add(definition_url)
-                results.append(
-                    {
-                        "title": "Definition",
-                        "url": str(definition_url),
-                        "snippet": str(definition_text),
-                    }
-                )
 
-        # Check Abstract
-        if not results:
-            abstract_text = payload.get("AbstractText")
-            abstract_url = payload.get("AbstractURL")
-            abstract_source = payload.get("Heading") or "Result"
-            if abstract_url:
-                if abstract_url not in seen:
-                    seen.add(abstract_url)
-                    results.append(
-                        {
-                            "title": str(abstract_source),
-                            "url": str(abstract_url),
-                            "snippet": str(abstract_text or ""),
-                        }
-                    )
-            elif abstract_text:
-                # If no URL but we have text, create a placeholder
-                results.append(
-                    {
-                        "title": str(abstract_source),
-                        "url": f"https://example.com/search?q={cleaned_query}",
-                        "snippet": str(abstract_text),
-                    }
-                )
 
         return results[:max_results]
 
@@ -131,8 +108,24 @@ class WebSearchProvider(SearchProvider):
     def _coerce_item(item: Dict[str, Any]) -> Dict[str, Any]:
         try:
             title = str(item.get("Text") or item.get("Name") or item.get("title") or "Untitled result").strip()
-            url = str(item.get("FirstURL") or item.get("URL") or item.get("url") or "").strip()
-            snippet = str(item.get("Text") or item.get("snippet") or "").strip()
+            # Prioritize FirstURL (actual source) over any proxy URLs
+            # But skip DuckDuckGo proxy URLs (they start with https://duckduckgo.com/)
+            url = str(
+                item.get("FirstURL")
+                or item.get("AbstractURL")
+                or item.get("DefinitionURL")
+                or item.get("DefinitionSource")
+                or item.get("URL")
+                or item.get("url")
+                or ""
+            ).strip()
+            
+            # Skip DuckDuckGo proxy/redirect URLs - they don't contain actual content
+            if url and url.startswith("https://duckduckgo.com/"):
+                return {}
+            
+            # For snippet, prefer dedicated snippet field, then Text, then title
+            snippet = str(item.get("snippet") or item.get("Text") or item.get("title") or "").strip()
         except (AttributeError, TypeError, ValueError):
             return {}
 

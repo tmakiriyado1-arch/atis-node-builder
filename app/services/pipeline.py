@@ -150,14 +150,32 @@ class EntityPipelineService:
 
         llm_provider = self.llm_provider
         api_key = getattr(llm_provider, "api_key", None) if llm_provider is not None else None
-        if not api_key:
-            return []
-
-        if self.enricher is not None:
-            claims = await self.enricher(entity_name, list(evidence), api_key=api_key, model=getattr(llm_provider, "model", None) if llm_provider is not None else None)
-            if isinstance(claims, list):
-                return [claim for claim in claims if isinstance(claim, ResearchClaim)]
-            return []
+        
+        # Try LLM enrichment if API key is available
+        if api_key and self.enricher is not None:
+            try:
+                claims = await self.enricher(entity_name, list(evidence), api_key=api_key, model=getattr(llm_provider, "model", None) if llm_provider is not None else None)
+                if isinstance(claims, list):
+                    return [claim for claim in claims if isinstance(claim, ResearchClaim)]
+            except Exception:
+                pass
+        
+        # Fallback: use evidence snippets as claims when no LLM is available
+        claims = []
+        for evidence_item in evidence:
+            claims.append(
+                ResearchClaim(
+                    claim=evidence_item.snippet,
+                    field_name="entity_profile",
+                    source_url=evidence_item.url,
+                    source_title=evidence_item.title,
+                    evidence_passage=evidence_item.snippet,
+                    source_type="webpage",
+                    confidence=0.0,
+                    extraction_method="search_result",
+                )
+            )
+        return claims
         return []
 
     @staticmethod
