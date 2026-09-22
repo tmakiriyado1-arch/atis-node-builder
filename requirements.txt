@@ -8,6 +8,7 @@ alembic==1.12.1
 httpx==0.25.2
 google-api-python-client==2.129.0
 google-auth==2.29.0
+beautifulsoup4==4.12.2
 pytest==7.4.3
 pytest-asyncio==0.21.1
 pytest-cov==4.1.0
