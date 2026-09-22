@@ -181,8 +181,21 @@ class ResearchEngine:
         self,
         fallback_provider: Optional[SearchProvider] = None,
     ) -> SearchOrchestrator:
-        """Create a default SearchOrchestrator with multiple providers."""
+        """Create a default SearchOrchestrator with multiple providers.
+        
+        Leads with Mozilla and DuckDuckGo as primary search providers,
+        followed by Wikipedia and Wikidata for authoritative data.
+        """
+        from app.services.research.mozilla_provider import MozillaProvider
+        
         providers = []
+        
+        # Lead with Mozilla as primary search provider
+        providers.append(MozillaProvider())
+        
+        # Add DuckDuckGo as secondary search provider
+        ddg_provider = fallback_provider or WebSearchProvider()
+        providers.append(ddg_provider)
         
         # Add Wikipedia provider (deterministic fallback)
         providers.append(WikipediaProvider())
@@ -199,16 +212,11 @@ class ResearchEngine:
         # Add Common Crawl provider (deep fallback)
         providers.append(CommonCrawlProvider())
         
-        # Add DuckDuckGo as one provider (not the only one)
-        # Use simplified version without User-Agent rotation
-        ddg_provider = fallback_provider or WebSearchProvider()
-        providers.append(ddg_provider)
-        
         return SearchOrchestrator(
             providers=providers,
             min_evidence=3,
             min_high_quality=2,
-            timeout_per_provider=30.0,
+            timeout_per_provider=15.0,
             max_concurrent_providers=3,
         )
 

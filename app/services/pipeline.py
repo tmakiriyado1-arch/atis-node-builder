@@ -60,6 +60,7 @@ class EntityPipelineService:
         from app.services.research.gdelt_provider import GDELTProvider
         from app.services.research.direct_site_crawler import DirectSiteCrawler
         from app.services.research.commoncrawl_provider import CommonCrawlProvider
+        from app.services.research.mozilla_provider import MozillaProvider
         
         self.registry = registry or EntityRegistry()
         self.resolver = resolver or EntityResolver(self.registry)
@@ -70,19 +71,23 @@ class EntityPipelineService:
         if orchestrator is not None:
             self.orchestrator = orchestrator
         else:
+            # Lead with Mozilla and DuckDuckGo as primary search providers
+            # Wikipedia and Wikidata for authoritative data
+            # GDELT for news, DirectSiteCrawler for official sites, CommonCrawl as fallback
             providers = [
+                MozillaProvider(),
+                search_provider or WebSearchProvider(),
                 WikipediaProvider(),
                 WikidataProvider(),
                 GDELTProvider(),
                 DirectSiteCrawler(),
                 CommonCrawlProvider(),
-                search_provider or WebSearchProvider(),
             ]
             self.orchestrator = SearchOrchestrator(
                 providers=providers,
                 min_evidence=3,
                 min_high_quality=2,
-                timeout_per_provider=30.0,
+                timeout_per_provider=15.0,
                 max_concurrent_providers=3,
             )
         

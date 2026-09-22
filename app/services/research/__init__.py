@@ -18,6 +18,7 @@ from app.services.research.wikidata_provider import WikidataProvider
 from app.services.research.gdelt_provider import GDELTProvider
 from app.services.research.direct_site_crawler import DirectSiteCrawler
 from app.services.research.commoncrawl_provider import CommonCrawlProvider
+from app.services.research.mozilla_provider import MozillaProvider
 
 __all__ = [
     "EvidenceRecord",
@@ -30,6 +31,7 @@ __all__ = [
     "SearchProviderUnavailable",
     "ProviderUnavailable",
     "WebSearchProvider",
+    "MozillaProvider",
     "WikipediaProvider",
     "WikidataProvider",
     "GDELTProvider",
