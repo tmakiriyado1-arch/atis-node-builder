@@ -271,20 +271,6 @@ class SearchOrchestrator:
                         query=query,
                     ))
                     logger.warning(f"[ORCHESTRATOR] Provider {provider_name} raised exception: {result}")
-                    else:
-                        providers_failed.append(provider_name)
-                        logger.warning(f"[ORCHESTRATOR] Provider {provider_name} failed: {result.error}")
-                else:
-                    # Exception occurred
-                    providers_failed.append(provider_name)
-                    provider_results.append(ProviderResult(
-                        provider_name=provider_name,
-                        role=provider_role,
-                        status=ProviderStatus.FAILED,
-                        error=str(result),
-                        query=query,
-                    ))
-                    logger.warning(f"[ORCHESTRATOR] Provider {provider_name} raised exception: {result}")
         
         # Phase 2: Normalize, deduplicate, and merge search results with provenance
         merged_results = self._merge_and_deduplicate_results(all_search_results)
