@@ -590,6 +590,21 @@ class ClaimClassifier:
             return "status"
         return None
 
+    def _extract_subtype(self, text: str, target: Optional[str]) -> Optional[str]:
+        """Extract subtype from text or target for concept entities."""
+        if not target:
+            return None
+        
+        lower_target = target.lower()
+        lower_text = text.lower()
+        
+        # Check for concept subtype patterns using the mapping
+        for concept_desc, subtype_val in self._concept_subtype_mapping.items():
+            if concept_desc.lower() in lower_target or concept_desc.lower() in lower_text:
+                return subtype_val
+        
+        return None
+
     def _extract_entity_type_from_target(self, target: Optional[str], text: str) -> Optional[str]:
         """Extract entity type from the target of an 'is a/an' claim."""
         if not target:
