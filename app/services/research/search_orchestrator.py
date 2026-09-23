@@ -2,6 +2,8 @@
 
 This orchestrator manages multiple search providers and ensures that failure
 of any single provider does not cause pipeline failure.
+
+Key architectural principle: Search breadth must happen BEFORE entity resolution is finalized.
 """
 from __future__ import annotations
 
@@ -14,6 +16,7 @@ from urllib.parse import urlparse
 
 from app.services.research.evidence import EvidenceRecord, deduplicate_evidence, normalize_search_result, normalize_url
 from app.services.research.page_crawler import CrawlResult, CrawlStats, PageCrawler
+from app.services.research.query_variation import QueryVariationGenerator, QueryVariationConfig
 from app.services.research.search_provider import ProviderRole, SearchProvider, SearchResult
 from app.logging import logger
 
@@ -95,11 +98,17 @@ class SearchOrchestrator:
     # Minimum number of high-quality evidence records
     MIN_HIGH_QUALITY_COUNT = 2
     
+    # Target number of unique URLs for sufficient evidence
+    TARGET_UNIQUE_URLS = 15
+    
     # Maximum number of results per provider (first page)
     FIRST_PAGE_LIMIT = 10
     
     # Maximum number of concurrent URL crawls
     MAX_CONCURRENT_CRAWLS = 5
+    
+    # Maximum query variations per entity
+    MAX_QUERY_VARIATIONS = 8
 
     def __init__(
         self,
@@ -111,6 +120,7 @@ class SearchOrchestrator:
         crawl_timeout: float = 15.0,
         max_concurrent_crawls: int = 5,
         page_crawler: Optional[PageCrawler] = None,
+        query_variation_config: Optional[QueryVariationConfig] = None,
     ):
         """Initialize orchestrator with a list of providers.
         
@@ -123,6 +133,7 @@ class SearchOrchestrator:
             crawl_timeout: Timeout for crawling individual URLs
             max_concurrent_crawls: Max URLs to crawl concurrently
             page_crawler: Optional custom PageCrawler instance
+            query_variation_config: Optional configuration for query variation generation
         """
         self.providers = list(providers) if providers else []
         self.min_evidence = min_evidence
@@ -137,6 +148,11 @@ class SearchOrchestrator:
             max_concurrent=max_concurrent_crawls,
         )
         self._crawl_failures: List[CrawlFailure] = []
+        self.query_variation_generator = QueryVariationGenerator(
+            query_variation_config or QueryVariationConfig(
+                max_variations=MAX_QUERY_VARIATIONS,
+            )
+        )
 
     def add_provider(self, provider: SearchProvider) -> None:
         """Add a search provider to the orchestrator."""
@@ -191,13 +207,24 @@ class SearchOrchestrator:
         providers_failed: List[str] = []
         total_queries = 0
         
+        # Generate query variations for broader discovery
+        query_variations = self.query_variation_generator.generate(
+            query,
+            entity_type=context.get("entity_type") if context else None,
+            context=context,
+            country=context.get("country") if context else None,
+        )
+        
+        logger.info(f"[ORCHESTRATOR] Generated {len(query_variations)} query variations")
+        
         # Process providers in batches to limit concurrency
         for i in range(0, len(self.providers), self.max_concurrent_providers):
             batch = self.providers[i:i + self.max_concurrent_providers]
             
             # Run batch concurrently
+            # Each provider will receive all query variations
             batch_results = await asyncio.gather(
-                *[self._run_provider(p, query, context, max_results) for p in batch],
+                *[self._run_provider(p, query_variations, query, context, max_results) for p in batch],
                 return_exceptions=True
             )
             
@@ -346,18 +373,28 @@ class SearchOrchestrator:
     async def _run_provider(
         self,
         provider: SearchProvider,
-        query: str,
+        query_variations: List[Any],  # List of QueryVariation or strings
+        original_query: str,
         context: Optional[Dict[str, Any]],
         max_results: int,
     ) -> ProviderResult:
-        """Run a single provider with timeout and convert results to SearchResult format."""
+        """Run a single provider with timeout and convert results to SearchResult format.
+        
+        Each provider receives all query variations to execute.
+        """
         provider_name = self._get_provider_name(provider)
         provider_role = self._get_provider_role(provider)
         
         try:
+            # Extract query strings from variations
+            if query_variations and hasattr(query_variations[0], 'query'):
+                queries = [v.query for v in query_variations]
+            else:
+                queries = list(query_variations)
+            
             # Apply timeout
             evidence = await asyncio.wait_for(
-                provider.search(query, max_results=max_results, context=context),
+                provider.search(queries, max_results=max_results, context=context),
                 timeout=self._provider_timeout,
             )
             

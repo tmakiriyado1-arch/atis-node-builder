@@ -2,6 +2,10 @@
 
 This provider queries Wikidata to retrieve canonical entity information,
 including labels, aliases, descriptions, official websites, and structured metadata.
+
+IMPORTANT: Wikidata candidates MUST pass semantic validation before their metadata
+can be associated with the requested entity. A semantic mismatch (e.g., "Zera" genus of
+insects vs "Zimbabwe Energy Regulatory Authority") must result in REJECTED status.
 """
 from __future__ import annotations
 
