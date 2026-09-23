@@ -150,7 +150,7 @@ class SearchOrchestrator:
         self._crawl_failures: List[CrawlFailure] = []
         self.query_variation_generator = QueryVariationGenerator(
             query_variation_config or QueryVariationConfig(
-                max_variations=MAX_QUERY_VARIATIONS,
+                max_variations=self.MAX_QUERY_VARIATIONS,
             )
         )
 
