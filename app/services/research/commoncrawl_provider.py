@@ -12,7 +12,7 @@ from urllib.parse import quote, urlparse
 
 import httpx
 
-from app.services.research.search_provider import SearchProvider
+from app.services.research.search_provider import ProviderRole, SearchProvider, SearchResult
 from app.logging import logger
 
 
@@ -22,6 +22,8 @@ class CommonCrawlProvider(SearchProvider):
     Uses the Common Crawl CDXJ index API to find archived pages.
     This is the deep fallback when all other providers fail.
     """
+
+    role = ProviderRole.DEEP_ARCHIVE
 
     def __init__(
         self,
@@ -86,7 +88,23 @@ class CommonCrawlProvider(SearchProvider):
                 unique_results.append(result)
         
         logger.info(f"[COMMONCRAWL] Found {len(unique_results)} results")
-        return unique_results[:max_results]
+        
+        # Convert to SearchResult format
+        search_results = []
+        for idx, result in enumerate(unique_results[:max_results]):
+            search_result = SearchResult(
+                provider=self.__class__.__name__,
+                query=cleaned_query,
+                page=1,
+                rank=idx + 1,
+                title=result.get("title", ""),
+                url=result.get("url", ""),
+                snippet=result.get("snippet", None),
+                metadata={"source": "common_crawl"},
+            )
+            search_results.append(search_result)
+        
+        return search_results
 
     async def _search_by_url(self, url: str, max_results: int) -> List[Dict[str, Any]]:
         """Search Common Crawl by URL pattern."""

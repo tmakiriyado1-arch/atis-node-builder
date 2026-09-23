@@ -35,6 +35,7 @@ class EvidenceRecord:
     retrieved_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     original_url: Optional[str] = None
     queries: List[str] = field(default_factory=list)
+    metadata: Optional[Dict[str, Any]] = field(default_factory=dict)
 
 
 def normalize_url(raw_url: Any) -> str:

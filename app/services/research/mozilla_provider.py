@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
-from app.services.research.search_provider import SearchProvider
+from app.services.research.search_provider import ProviderRole, SearchProvider, SearchResult
 from app.logging import logger
 
 
@@ -19,6 +19,8 @@ class MozillaProvider(SearchProvider):
     
     This is an alternative to DuckDuckGo that may work better from Render IPs.
     """
+
+    role = ProviderRole.SECONDARY_WEB_SEARCH
 
     USER_AGENT = "NORAResearchBot/1.0 (+https://github.com/tmakiriyado1-arch/atis-node-builder)"
 
@@ -75,7 +77,23 @@ class MozillaProvider(SearchProvider):
                     all_results.append(result)
         
         logger.info(f"[MOZILLA] Found {len(all_results)} results")
-        return all_results[:max_results]
+        
+        # Convert to SearchResult format
+        search_results = []
+        for idx, result in enumerate(all_results[:max_results]):
+            search_result = SearchResult(
+                provider=self.__class__.__name__,
+                query=cleaned_query,
+                page=1,
+                rank=idx + 1,
+                title=result.get("title", ""),
+                url=result.get("url", ""),
+                snippet=result.get("snippet", None),
+                metadata={},
+            )
+            search_results.append(search_result)
+        
+        return search_results
 
     async def _search_variant(self, query: str, max_results: int) -> List[Dict[str, Any]]:
         """Search for a single query variant."""

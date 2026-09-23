@@ -11,8 +11,13 @@ from urllib.parse import quote
 
 import httpx
 
-from app.services.research.search_provider import SearchProvider
+from app.services.research.search_provider import ProviderRole, SearchProvider, SearchResult
 from app.logging import logger
+
+
+class EntityMatchError(Exception):
+    """Raised when a Wikipedia result fails entity matching validation."""
+    pass
 
 
 # List of Wikipedia domain variations for different regions
@@ -28,6 +33,8 @@ class WikipediaProvider(SearchProvider):
     Uses the MediaWiki API to retrieve page information, summaries,
     and search results with full provenance.
     """
+
+    role = ProviderRole.REFERENCE
 
     def __init__(
         self,
@@ -63,6 +70,10 @@ class WikipediaProvider(SearchProvider):
 
         logger.info(f"[WIKIPEDIA] Searching for '{cleaned_query[:100]}'")
         
+        # Extract acronym and base name for validation
+        acronym = self._extract_acronym(cleaned_query)
+        base_name = self._remove_acronym(cleaned_query)
+        
         results = []
         
         # Generate query variants for better matching
@@ -74,12 +85,21 @@ class WikipediaProvider(SearchProvider):
                 break
             direct_result = await self._try_direct_page(variant)
             if direct_result:
-                results.append(direct_result)
-                logger.info(f"[WIKIPEDIA] Found direct page: {direct_result.get('title', '')}")
+                # Validate entity match before accepting
+                if self._is_entity_match(
+                    direct_result.get('title', ''),
+                    direct_result.get('snippet', ''),
+                    base_name,
+                    acronym,
+                ):
+                    results.append(direct_result)
+                    logger.info(f"[WIKIPEDIA] Found direct page: {direct_result.get('title', '')}")
+                else:
+                    logger.info(f"[WIKIPEDIA] Rejected direct page (entity mismatch): {direct_result.get('title', '')}")
         
         # If we don't have enough results, try search with original query
         if len(results) < max_results:
-            search_results = await self._search_api(cleaned_query, max_results - len(results))
+            search_results = await self._search_api(cleaned_query, max_results - len(results), base_name, acronym)
             for result in search_results:
                 if result not in results:
                     results.append(result)
@@ -89,13 +109,27 @@ class WikipediaProvider(SearchProvider):
             for variant in query_variants:
                 if len(results) >= max_results:
                     break
-                search_results = await self._search_api(variant, max_results - len(results))
+                search_results = await self._search_api(variant, max_results - len(results), base_name, acronym)
                 for result in search_results:
                     if result not in results:
                         results.append(result)
         
-        # Limit results
-        return results[:max_results]
+        # Convert to SearchResult format and limit
+        search_results = []
+        for idx, result in enumerate(results[:max_results]):
+            search_result = SearchResult(
+                provider=self.__class__.__name__,
+                query=cleaned_query,
+                page=1,
+                rank=idx + 1,
+                title=result.get("title", ""),
+                url=result.get("url", ""),
+                snippet=result.get("snippet", None),
+                metadata={"validated": True},
+            )
+            search_results.append(search_result)
+        
+        return search_results
 
     async def _try_direct_page(self, query: str) -> Optional[Dict[str, Any]]:
         """Try to fetch a page directly by its title."""
@@ -120,7 +154,13 @@ class WikipediaProvider(SearchProvider):
         
         return None
 
-    async def _search_api(self, query: str, max_results: int) -> List[Dict[str, Any]]:
+    async def _search_api(
+        self,
+        query: str,
+        max_results: int,
+        base_name: Optional[str] = None,
+        acronym: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         """Search Wikipedia using the OpenSearch API with filtering to avoid substring matches."""
         params = {
             "action": "opensearch",
@@ -146,10 +186,13 @@ class WikipediaProvider(SearchProvider):
         results = []
         query_lower = query.lower()
         
-        # Extract acronym from query if present (do this once outside the loop)
-        acronym = self._extract_acronym(query)
-        base_query = self._remove_acronym(query)
-        base_words = set(base_query.lower().split()) if base_query else set()
+        # Use provided base_name and acronym, or extract from query
+        if base_name is None:
+            base_name = self._remove_acronym(query)
+        if acronym is None:
+            acronym = self._extract_acronym(query)
+        
+        base_words = set(base_name.lower().split()) if base_name else set()
         
         for i, title in enumerate(data[1]):
             if i >= max_results:
@@ -196,6 +239,11 @@ class WikipediaProvider(SearchProvider):
                 if self._is_personal_name(title_lower):
                     logger.info(f"[WIKIPEDIA] Filtering out personal name (no query match): {title}")
                     continue
+            
+            # Validate entity match for all results
+            if not self._is_entity_match(title, snippet, base_name, acronym):
+                logger.info(f"[WIKIPEDIA] Rejected search result (entity mismatch): {title}")
+                continue
             
             results.append({
                 "title": str(title),
@@ -378,6 +426,107 @@ class WikipediaProvider(SearchProvider):
                 if words[1][0].isupper():
                     return True
         
+        return False
+
+    def _is_entity_match(
+        self,
+        title: str,
+        snippet: str,
+        entity_name: str,
+        acronym: Optional[str] = None,
+    ) -> bool:
+        """Determine if a Wikipedia result represents the same entity as the query.
+        
+        Uses normalized forms and requires sufficient evidence that the page
+        represents the same entity. Acronym-only matches are validated against
+        contextual evidence.
+        
+        Args:
+            title: The Wikipedia page title
+            snippet: The page snippet/description
+            entity_name: The canonical entity name (without acronym)
+            acronym: The extracted acronym (if any)
+            
+        Returns:
+            True if the result represents the same entity, False otherwise
+        """
+        # Normalize all text for comparison
+        def normalize(text: str) -> str:
+            """Normalize text for comparison."""
+            return re.sub(r'\s+', ' ', text.strip().lower())
+        
+        title_norm = normalize(title)
+        snippet_norm = normalize(snippet)
+        entity_norm = normalize(entity_name)
+        combined_text = f"{title_norm} {snippet_norm}"
+        
+        # If we have no entity name to match against, accept (shouldn't happen)
+        if not entity_norm:
+            return True
+        
+        # Check 1: Full canonical name in title or snippet
+        if entity_norm in title_norm or entity_norm in snippet_norm:
+            return True
+        
+        # Check 2: Strong token overlap
+        # Split entity name into meaningful tokens (remove common stop words)
+        entity_words = set(w for w in entity_norm.split() if len(w) > 2)
+        text_words = set(w for w in combined_text.split() if len(w) > 2)
+        
+        # If we have good overlap (at least 2+ matching tokens for multi-word entities)
+        overlap = entity_words & text_words
+        if len(overlap) >= 2:
+            return True
+        
+        # Check 3: Acronym validation
+        # If acronym is present, require additional contextual evidence
+        if acronym:
+            acronym_lower = acronym.lower()
+            
+            # Check if acronym appears as whole word in title
+            acronym_pattern = rf"\b{re.escape(acronym_lower)}\b"
+            acronym_in_title = bool(re.search(acronym_pattern, title_norm))
+            
+            if acronym_in_title:
+                # Acronym is in title - check for contextual evidence
+                # The page should mention the full entity name or have strong token overlap
+                if entity_norm in combined_text:
+                    return True
+                
+                # Check if snippet mentions the entity name
+                if entity_norm in snippet_norm:
+                    return True
+                
+                # Check for partial entity name in snippet
+                # At least some of the entity words should appear
+                if len(overlap) >= 1:
+                    # For acronym-only matches, require at least 1 matching token
+                    # but also check that this isn't a personal name
+                    if self._is_personal_name(title_norm):
+                        return False
+                    # If we have at least 1 matching token and it's not a personal name,
+                    # it might be valid (e.g., "ZERA" page that mentions "Zimbabwe" in snippet)
+                    # But be conservative - require at least 2 matching tokens or full name
+                    if len(overlap) >= 2:
+                        return True
+                    # If only 1 matching token, be very conservative
+                    # Only accept if the entity is clearly organizational
+                    if any(keyword in combined_text for keyword in 
+                           ['authority', 'regulatory', 'energy', 'zimbabwe', 'organization', 
+                            'agency', 'company', 'government', 'public']):
+                        return True
+                
+                # If acronym in title but no entity overlap and it's a personal name, reject
+                if self._is_personal_name(title_norm):
+                    return False
+        
+        # Check 4: If no acronym and no overlap, reject
+        # This catches random results that don't match the entity at all
+        if len(overlap) == 0 and entity_norm not in combined_text:
+            return False
+        
+        # Default: If we have some evidence but not strong, be conservative
+        # For organizational queries, prefer false negatives over false positives
         return False
 
     @staticmethod

@@ -12,7 +12,7 @@ from urllib.parse import quote
 
 import httpx
 
-from app.services.research.search_provider import SearchProvider
+from app.services.research.search_provider import ProviderRole, SearchProvider, SearchResult
 from app.logging import logger
 
 
@@ -22,6 +22,8 @@ class GDELTProvider(SearchProvider):
     Uses the GDELT DOC API to search for articles mentioning the entity.
     Provides sentence-level context and provenance.
     """
+
+    role = ProviderRole.NEWS
 
     def __init__(
         self,
@@ -116,7 +118,23 @@ class GDELTProvider(SearchProvider):
                 results.append(result)
         
         logger.info(f"[GDELT] Found {len(results)} articles")
-        return results
+        
+        # Convert to SearchResult format
+        search_results = []
+        for idx, result in enumerate(results):
+            search_result = SearchResult(
+                provider=self.__class__.__name__,
+                query=cleaned_query,
+                page=1,
+                rank=idx + 1,
+                title=result.get("title", ""),
+                url=result.get("url", ""),
+                snippet=result.get("snippet", None),
+                metadata={"published_date": result.get("published_date")},
+            )
+            search_results.append(search_result)
+        
+        return search_results
 
     def _format_article(self, article: Dict[str, Any], query: str) -> Optional[Dict[str, Any]]:
         """Format a GDELT article as a search result."""

@@ -13,7 +13,8 @@ from typing import Any, Dict, List, Optional
 import httpx
 from bs4 import BeautifulSoup
 
-from app.services.research.search_provider import SearchProvider
+from app.services.research.search_provider import ProviderRole, SearchProvider, SearchResult
+from app.services.research.evidence import normalize_url
 
 
 class WebSearchProvider(SearchProvider):
@@ -28,6 +29,8 @@ class WebSearchProvider(SearchProvider):
     - Site scraping for minimal snippets
     - Adaptive relevance scoring
     """
+
+    role = ProviderRole.WEB_DISCOVERY
 
     # Single, honest User-Agent - no rotation (doesn't help with IP blocking)
     USER_AGENT = "NORAResearchBot/1.0 (+https://github.com/tmakiriyado1-arch/atis-node-builder)"
@@ -116,12 +119,27 @@ class WebSearchProvider(SearchProvider):
         
         logger.info(f"[SEARCH] Final results: {len(all_results)} total, {len(high_quality)} high-quality")
         
+        # Convert to SearchResult format with proper provenance
+        search_results = []
+        for idx, result in enumerate(all_results[:max_results]):
+            search_result = SearchResult(
+                provider=self.__class__.__name__,
+                query=query,
+                page=1,
+                rank=idx + 1,
+                title=result.get("title", ""),
+                url=result.get("url", ""),
+                snippet=result.get("snippet", None),
+                metadata={"relevance_score": result.get("_relevance_score", 0)},
+            )
+            search_results.append(search_result)
+        
         # Close client if we created it during this search
         if self._client is not None:
             await self._client.aclose()
             self._client = None
         
-        return all_results[:max_results]
+        return search_results
     
     def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client with connection pooling."""

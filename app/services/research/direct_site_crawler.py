@@ -12,7 +12,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 from bs4 import BeautifulSoup
 
-from app.services.research.search_provider import SearchProvider
+from app.services.research.search_provider import ProviderRole, SearchProvider, SearchResult
 from app.logging import logger
 
 
@@ -23,6 +23,8 @@ class DirectSiteCrawler(SearchProvider):
     (e.g., from Wikidata, Wikipedia, or previous research) and want to extract
     information directly from the source.
     """
+
+    role = ProviderRole.OFFICIAL_SOURCE
 
     def __init__(
         self,
@@ -43,32 +45,29 @@ class DirectSiteCrawler(SearchProvider):
         query: str,
         max_results: int = 10,
         context: Optional[Dict[str, Any]] = None,
-    ) -> List[Dict[str, Any]]:
+    ) -> List[SearchResult]:
         """Crawl official sites related to the query.
         
-        This provider first discovers official URLs from the query, then crawls them.
+        This provider first discovers official URLs from verified sources (context),
+        then crawls them. It does NOT guess URLs from acronyms or entity names.
         
         Args:
             query: The entity name or known URL
             max_results: Maximum number of results to return
-            context: Optional context containing known URLs
+            context: Optional context containing verified official URLs
             
         Returns:
-            List of result dictionaries with title, url, snippet
+            List of SearchResult objects with title, url, snippet
         """
         # If query is already a URL, crawl it directly
         if self._is_url(query):
             results = await self._crawl_url(query)
-            return results[:max_results]
+            return self._format_as_search_results(results, query)[:max_results]
         
-        # Otherwise, try to discover official URLs from the query
-        official_urls = self._discover_official_urls(query, context)
+        # Discover official URLs from verified sources only
+        official_urls = await self._discover_verified_urls(query, context)
         
-        if not official_urls:
-            # Try common URL patterns
-            official_urls = self._generate_common_urls(query)
-        
-        # Crawl all discovered URLs
+        # Crawl all verified URLs
         all_results = []
         for url in official_urls[:self.max_pages]:
             try:
@@ -80,7 +79,7 @@ class DirectSiteCrawler(SearchProvider):
                 logger.warning(f"[DIRECT_CRAWL] Failed to crawl {url}: {e}")
                 continue
         
-        return all_results[:max_results]
+        return self._format_as_search_results(all_results, query)[:max_results]
 
     async def crawl_site(
         self,
@@ -279,99 +278,92 @@ class DirectSiteCrawler(SearchProvider):
         
         return True
 
-    def _discover_official_urls(self, query: str, context: Optional[Dict[str, Any]]) -> List[str]:
-        """Discover official URLs from query and context."""
+    async def _discover_verified_urls(self, query: str, context: Optional[Dict[str, Any]]) -> List[str]:
+        """Discover official URLs from verified sources only.
+        
+        This method only returns URLs that have been explicitly provided as trusted
+        metadata or extracted from verified sources. It does NOT generate guessed
+        URLs from acronyms or entity names.
+        
+        Args:
+            query: The entity name or known URL
+            context: Optional context containing verified official URLs
+            
+        Returns:
+            List of verified URLs to crawl
+        """
         urls = []
         
-        # Check context for known URLs
+        # Check context for known, verified URLs
         if context:
+            # Official website from Wikidata or other trusted source
             if "official_website" in context:
-                urls.append(context["official_website"])
+                official_website = context["official_website"]
+                if official_website and self._is_url(official_website):
+                    urls.append(official_website)
+                    logger.info(f"[DIRECT_CRAWL] Using verified official website from context: {official_website}")
+            
+            # URLs from trusted sources
             if "urls" in context:
-                urls.extend(context["urls"])
+                for url in context["urls"]:
+                    if url and self._is_url(url):
+                        urls.append(url)
+            
+            # Sources from trusted metadata
             if "sources" in context:
-                urls.extend(context["sources"])
+                for source in context["sources"]:
+                    if source and self._is_url(source):
+                        urls.append(source)
         
-        # Try to extract URL from query if it's a URL
+        # Try to extract URL from query if it's explicitly a URL
         if self._is_url(query):
             urls.append(query)
         
-        # Try common patterns for official websites
-        acronym = self._extract_acronym(query)
-        base_name = self._remove_acronym(query)
-        
-        # For Zimbabwe entities, prioritize .co.zw domains
-        # Check if query mentions Zimbabwe or SADC
-        if any(keyword in query.lower() for keyword in ['zimbabwe', 'sadc', 'southern africa']):
-            if acronym:
-                urls.extend([
-                    f"https://{acronym.lower()}.co.zw/",
-                    f"https://www.{acronym.lower()}.co.zw/",
-                    f"https://{acronym.lower()}.gov.zw/",
-                ])
-            urls.extend([
-                f"https://{base_name.lower().replace(' ', '-')}.co.zw/",
-                f"https://www.{base_name.lower().replace(' ', '-')}.co.zw/",
-            ])
-        
-        # Also add generic domains
-        if acronym:
-            urls.extend([
-                f"https://{acronym.lower()}.org/",
-                f"https://{acronym.lower()}.com/",
-                f"https://www.{acronym.lower()}.org/",
-                f"https://www.{acronym.lower()}.com/",
-            ])
-        
         # Clean and deduplicate
         urls = list(set(urls))
-        return [url for url in urls if self._is_url(url)]
+        
+        return urls
 
-    def _generate_common_urls(self, query: str) -> List[str]:
-        """Generate common URL patterns for the query.
+    async def _crawl_and_return_search_results(
+        self,
+        urls: List[str],
+        query: str,
+    ) -> List[SearchResult]:
+        """Crawl URLs and return as SearchResult objects."""
+        all_results = []
         
-        For African entities, prioritize .co.zw, .za, .gov.zw domains.
-        For international entities, try .org, .com, .int, .gov.
-        """
-        acronym = self._extract_acronym(query)
-        base_name = self._remove_acronym(query)
+        for url in urls[:self.max_pages]:
+            try:
+                results = await self._crawl_url(url)
+                all_results.extend(results)
+            except Exception as e:
+                logger.warning(f"[DIRECT_CRAWL] Failed to crawl {url}: {e}")
+                continue
         
-        urls = []
+        return self._format_as_search_results(all_results, query)
+    
+    def _format_as_search_results(
+        self,
+        results: List[Dict[str, Any]],
+        query: str,
+    ) -> List[SearchResult]:
+        """Format crawl results as SearchResult objects."""
+        search_results = []
         
-        # African country-specific domains (Zimbabwe uses .co.zw)
-        african_domains = [
-            f"https://{acronym.lower()}.co.zw/" if acronym else None,
-            f"https://www.{acronym.lower()}.co.zw/" if acronym else None,
-            f"https://{base_name.lower().replace(' ', '-')}.co.zw/",
-            f"https://www.{base_name.lower().replace(' ', '-')}.co.zw/",
-            f"https://{acronym.lower()}.gov.zw/" if acronym else None,
-            f"https://{base_name.lower().replace(' ', '-')}.gov.zw/",
-        ]
+        for idx, result in enumerate(results):
+            search_result = SearchResult(
+                provider=self.__class__.__name__,
+                query=query,
+                page=1,
+                rank=idx + 1,
+                title=result.get("title", ""),
+                url=result.get("url", ""),
+                snippet=result.get("snippet", ""),
+                metadata={"source": "direct_crawl"},
+            )
+            search_results.append(search_result)
         
-        # SADC and African regional organizations
-        sadc_domains = [
-            f"https://{acronym.lower()}.sadc.int/" if acronym else None,
-            f"https://www.{acronym.lower()}.sadc.int/" if acronym else None,
-            f"https://sadc.int/",
-        ]
-        
-        # International domains
-        international_domains = [
-            f"https://{acronym.lower()}.org/" if acronym else None,
-            f"https://www.{acronym.lower()}.org/" if acronym else None,
-            f"https://{acronym.lower()}.com/" if acronym else None,
-            f"https://www.{acronym.lower()}.com/" if acronym else None,
-            f"https://{base_name.lower().replace(' ', '-')}.org/",
-            f"https://www.{base_name.lower().replace(' ', '-')}.org/",
-            f"https://{base_name.lower().replace(' ', '-')}.com/",
-        ]
-        
-        # Combine all domains - prioritize African domains first
-        all_domains = african_domains + sadc_domains + international_domains
-        
-        # Filter out None values and deduplicate
-        urls = list(set([d for d in all_domains if d is not None]))
-        return [url for url in urls if self._is_url(url)]
+        return search_results
 
     def _extract_acronym(self, name: str) -> Optional[str]:
         """Extract acronym from parentheses at end of name."""

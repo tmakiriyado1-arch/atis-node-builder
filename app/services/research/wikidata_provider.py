@@ -12,7 +12,7 @@ from urllib.parse import quote
 
 import httpx
 
-from app.services.research.search_provider import SearchProvider
+from app.services.research.search_provider import ProviderRole, SearchProvider, SearchResult
 from app.logging import logger
 
 
@@ -22,6 +22,8 @@ class WikidataProvider(SearchProvider):
     Uses the Wikidata Query Service (WDQS) SPARQL endpoint and the Wikidata API
     to retrieve structured entity data for identity resolution.
     """
+
+    role = ProviderRole.IDENTITY
 
     def __init__(
         self,
@@ -77,15 +79,15 @@ class WikidataProvider(SearchProvider):
                     results.append(result)
                     logger.info(f"[WIKIDATA] Found entity: {entity_id}")
         
-        # If we have results, return them
+        # If we have results, convert and return them
         if results:
-            return results[:max_results]
+            return self._to_search_results(results, cleaned_query)[:max_results]
         
         # If direct lookup fails, try SPARQL search with original query
         results = await self._sparql_search(cleaned_query, max_results)
         if results:
             logger.info(f"[WIKIDATA] SPARQL search returned {len(results)} results")
-            return results[:max_results]
+            return self._to_search_results(results, cleaned_query)[:max_results]
         
         # Try SPARQL with variants
         for variant in query_variants:
@@ -94,7 +96,7 @@ class WikidataProvider(SearchProvider):
             variant_results = await self._sparql_search(variant, max_results - len(results))
             results.extend(variant_results)
         
-        return results[:max_results]
+        return self._to_search_results(results, cleaned_query)[:max_results]
 
     async def _find_entity_by_label(self, label: str) -> Optional[str]:
         """Find a Wikidata entity ID by its label."""
@@ -164,7 +166,10 @@ class WikidataProvider(SearchProvider):
         return entity_data
 
     async def _sparql_search(self, query: str, max_results: int) -> List[Dict[str, Any]]:
-        """Search Wikidata using SPARQL."""
+        """Search Wikidata using SPARQL.
+        
+        Returns structured metadata including official website when available.
+        """
         # Build a SPARQL query to find entities matching the label
         sparql_query = f"""
         SELECT DISTINCT ?item ?itemLabel ?description ?officialWebsite WHERE {{
@@ -214,10 +219,15 @@ class WikidataProvider(SearchProvider):
                     "entity_id": entity_id,
                 }
                 
-                # Add official website if available
+                # Add structured metadata
+                metadata = {}
                 website_value = website.get("value", "")
                 if website_value:
-                    result["official_website"] = website_value
+                    metadata["official_website"] = website_value
+                
+                # Only add metadata if we have any
+                if metadata:
+                    result["metadata"] = metadata
                 
                 results.append(result)
         
@@ -287,12 +297,36 @@ class WikidataProvider(SearchProvider):
         """Remove acronym in parentheses from end of name."""
         return re.sub(r"\s*\([^)]+\)\s*$", "", name.strip())
 
+    def _to_search_results(
+        self,
+        results: List[Dict[str, Any]],
+        query: str,
+    ) -> List[SearchResult]:
+        """Convert result dicts to SearchResult format."""
+        search_results = []
+        for idx, result in enumerate(results):
+            search_result = SearchResult(
+                provider=self.__class__.__name__,
+                query=query,
+                page=1,
+                rank=idx + 1,
+                title=result.get("title", ""),
+                url=result.get("url", ""),
+                snippet=result.get("snippet", None),
+                metadata=result.get("metadata", {}),
+            )
+            search_results.append(search_result)
+        return search_results
+
     def _format_entity_result(
         self,
         entity_data: Dict[str, Any],
         query: str,
     ) -> Dict[str, Any]:
-        """Format Wikidata entity information as a search result."""
+        """Format Wikidata entity information as a search result.
+        
+        Includes structured metadata for identity resolution and official-source discovery.
+        """
         entity_id = entity_data.get("id", "")
         
         # Get labels
@@ -303,10 +337,10 @@ class WikidataProvider(SearchProvider):
         descriptions = entity_data.get("descriptions", {}).get("en", {})
         description = descriptions.get("value", "")
         
-        # Get official website
+        # Get official website (P856)
         official_website = None
         claims = entity_data.get("claims", {})
-        if "P856" in claims:  # Official website property
+        if "P856" in claims:
             for claim in claims["P856"]:
                 if claim.get("mainsnak", {}).get("datavalue", {}).get("value"):
                     official_website = claim["mainsnak"]["datavalue"]["value"]
@@ -322,37 +356,52 @@ class WikidataProvider(SearchProvider):
         if "enwiki" in sitelinks:
             wikipedia_url = f"https://en.wikipedia.org/wiki/{sitelinks['enwiki'].get('title', '')}"
         
-        # Build result
+        # Build result with entity_id in metadata
         result = {
             "title": title,
             "url": f"https://www.wikidata.org/wiki/{entity_id}",
             "snippet": description,
             "source": "wikidata",
-            "entity_id": entity_id,
         }
         
-        # Add metadata
-        if official_website:
-            result["official_website"] = official_website
-        if alias_list:
-            result["aliases"] = alias_list
-        if wikipedia_url:
-            result["wikipedia_url"] = wikipedia_url
+        # Add structured metadata for identity and official-source discovery
+        metadata = {"entity_id": entity_id}
         
-        # Extract country if available
-        if "P17" in claims:  # Country property
+        if official_website:
+            metadata["official_website"] = official_website
+        
+        if alias_list:
+            metadata["aliases"] = alias_list
+        
+        # Extract country (P17) with label resolution
+        if "P17" in claims:
             country_claims = claims["P17"]
             if country_claims:
                 country_id = country_claims[0].get("mainsnak", {}).get("datavalue", {}).get("value", "")
                 if country_id:
-                    result["country_id"] = country_id
+                    metadata["country_id"] = country_id
+                    # Try to resolve country label
+                    country_labels = entity_data.get("labels", {}).get("en", {})
+                    # Note: country label resolution would require additional API call
+                    # For now, just store the ID
         
-        # Extract entity type if available
-        if "P31" in claims:  # Instance of property
+        # Extract instance of (P31) with label resolution
+        if "P31" in claims:
             instance_claims = claims["P31"]
-            if instance_claims:
-                instance_id = instance_claims[0].get("mainsnak", {}).get("datavalue", {}).get("value", "")
+            instance_ids = []
+            for claim in instance_claims:
+                instance_id = claim.get("mainsnak", {}).get("datavalue", {}).get("value", "")
                 if instance_id:
-                    result["entity_type_id"] = instance_id
+                    instance_ids.append(instance_id)
+            if instance_ids:
+                metadata["instance_of_ids"] = instance_ids
+        
+        # Add Wikipedia URL if available
+        if wikipedia_url:
+            metadata["wikipedia_url"] = wikipedia_url
+        
+        # Only add metadata if we have any
+        if metadata:
+            result["metadata"] = metadata
         
         return result
