@@ -222,9 +222,9 @@ class SearchOrchestrator:
             batch = self.providers[i:i + self.max_concurrent_providers]
             
             # Run batch concurrently
-            # Each provider will receive all query variations
+            # Each provider will receive the original query and generate its own variations
             batch_results = await asyncio.gather(
-                *[self._run_provider(p, query_variations, query, context, max_results) for p in batch],
+                *[self._run_provider(p, query, context, max_results) for p in batch],
                 return_exceptions=True
             )
             
@@ -257,6 +257,20 @@ class SearchOrchestrator:
                                             logger.info(f"[ORCHESTRATOR] Propagating official_website to context: {official_website}")
                         
                         logger.info(f"[ORCHESTRATOR] Provider {provider_name} returned {len(result.raw_results)} results")
+                    else:
+                        providers_failed.append(provider_name)
+                        logger.warning(f"[ORCHESTRATOR] Provider {provider_name} failed: {result.error}")
+                else:
+                    # Exception occurred
+                    providers_failed.append(provider_name)
+                    provider_results.append(ProviderResult(
+                        provider_name=provider_name,
+                        role=provider_role,
+                        status=ProviderStatus.FAILED,
+                        error=str(result),
+                        query=query,
+                    ))
+                    logger.warning(f"[ORCHESTRATOR] Provider {provider_name} raised exception: {result}")
                     else:
                         providers_failed.append(provider_name)
                         logger.warning(f"[ORCHESTRATOR] Provider {provider_name} failed: {result.error}")
@@ -373,28 +387,19 @@ class SearchOrchestrator:
     async def _run_provider(
         self,
         provider: SearchProvider,
-        query_variations: List[Any],  # List of QueryVariation or strings
-        original_query: str,
+        query: str,
         context: Optional[Dict[str, Any]],
         max_results: int,
     ) -> ProviderResult:
-        """Run a single provider with timeout and convert results to SearchResult format.
-        
-        Each provider receives all query variations to execute.
-        """
+        """Run a single provider with timeout and convert results to SearchResult format."""
         provider_name = self._get_provider_name(provider)
         provider_role = self._get_provider_role(provider)
         
         try:
-            # Extract query strings from variations
-            if query_variations and hasattr(query_variations[0], 'query'):
-                queries = [v.query for v in query_variations]
-            else:
-                queries = list(query_variations)
-            
             # Apply timeout
+            # Each provider handles its own query variation internally
             evidence = await asyncio.wait_for(
-                provider.search(queries, max_results=max_results, context=context),
+                provider.search(query, max_results=max_results, context=context),
                 timeout=self._provider_timeout,
             )
             
