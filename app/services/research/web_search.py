@@ -179,10 +179,17 @@ class WebSearchProvider(SearchProvider):
             except (httpx.HTTPError, httpx.TimeoutException, httpx.ConnectError) as e:
                 last_exception = e
                 from app.logging import logger
+                # Extract detailed error info
+                error_type = type(e).__name__
+                error_details = str(e)
+                status_code = getattr(e, 'response', None)
+                if status_code and hasattr(status_code, 'status_code'):
+                    error_details = f"HTTP {status_code.status_code}: {error_details}"
+                
                 if attempt < self.max_retries:
                     # Exponential backoff with jitter
                     delay = self.backoff_factor * (2 ** attempt) + random.uniform(0, 0.5)
-                    logger.warning(f"[SEARCH] DuckDuckGo request failed for '{cleaned_query[:50]}' (attempt {attempt + 1}/{self.max_retries + 1}), retrying in {delay:.1f}s: {e}")
+                    logger.warning(f"[SEARCH] DuckDuckGo {error_type} for '{cleaned_query[:50]}' (attempt {attempt + 1}/{self.max_retries + 1}), retrying in {delay:.1f}s: {error_details}")
                     await asyncio.sleep(delay)
                     # Recreate client (no User-Agent rotation - it doesn't help with IP blocking)
                     if self._client:
@@ -190,7 +197,7 @@ class WebSearchProvider(SearchProvider):
                         self._client = None
                     client = self._get_client()
                 else:
-                    logger.warning(f"[SEARCH] DuckDuckGo request failed for '{cleaned_query[:50]}' after {self.max_retries + 1} attempts: {e}")
+                    logger.error(f"[SEARCH] DuckDuckGo FAILED after {self.max_retries + 1} attempts - {error_type}: {error_details}")
                     # Mark as provider unavailable - orchestrator will handle this
                     raise
         else:
@@ -201,7 +208,8 @@ class WebSearchProvider(SearchProvider):
             payload = response.json()
         except (ValueError, TypeError) as e:
             from app.logging import logger
-            logger.warning(f"[SEARCH] Failed to parse JSON response for '{cleaned_query[:50]}': {e}")
+            error_type = type(e).__name__
+            logger.error(f"[SEARCH] JSON parse FAILED for '{cleaned_query[:50]}' - {error_type}: {e}")
             return []
 
         if not isinstance(payload, dict):
@@ -511,5 +519,6 @@ class WebSearchProvider(SearchProvider):
                 
         except Exception as e:
             from app.logging import logger
-            logger.warning(f"[SCRAPE] Failed to scrape {url}: {e}")
+            error_type = type(e).__name__
+            logger.error(f"[SCRAPE] FAILED for {url} - {error_type}: {e}")
             return ""

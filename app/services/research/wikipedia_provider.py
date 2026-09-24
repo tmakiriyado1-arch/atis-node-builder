@@ -142,7 +142,7 @@ class WikipediaProvider(SearchProvider):
             if result:
                 return result
         except Exception as e:
-            logger.warning(f"[WIKIPEDIA] REST API failed for '{page_title}': {e}")
+            logger.error(f"[WIKIPEDIA] REST API failed for '{page_title}': {e}")
         
         # Fallback to action API
         try:
@@ -150,7 +150,7 @@ class WikipediaProvider(SearchProvider):
             if result:
                 return result
         except Exception as e:
-            logger.warning(f"[WIKIPEDIA] Action API failed for '{page_title}': {e}")
+            logger.error(f"[WIKIPEDIA] Action API failed for '{page_title}': {e}")
         
         return None
 
@@ -177,7 +177,8 @@ class WikipediaProvider(SearchProvider):
                 response.raise_for_status()
                 data = response.json()
         except Exception as e:
-            logger.warning(f"[WIKIPEDIA] OpenSearch failed for '{query[:50]}': {e}")
+            error_type = type(e).__name__
+            logger.error(f"[WIKIPEDIA] OpenSearch FAILED for '{query[:50]}' - {error_type}: {e}")
             return []
         
         if not isinstance(data, list) or len(data) < 2:
@@ -268,7 +269,7 @@ class WikipediaProvider(SearchProvider):
                 response.raise_for_status()
                 data = response.json()
         except Exception as e:
-            logger.warning(f"[WIKIPEDIA] REST summary failed for '{page_title}': {e}")
+            logger.error(f"[WIKIPEDIA] REST summary failed for '{page_title}': {e}")
             return None
         
         if not isinstance(data, dict):
@@ -305,7 +306,7 @@ class WikipediaProvider(SearchProvider):
                 response.raise_for_status()
                 data = response.json()
         except Exception as e:
-            logger.warning(f"[WIKIPEDIA] Action API summary failed for '{page_title}': {e}")
+            logger.error(f"[WIKIPEDIA] Action API summary failed for '{page_title}': {e}")
             return None
         
         if not isinstance(data, dict):

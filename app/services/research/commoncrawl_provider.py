@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import quote, urlparse
 
 import httpx
+from bs4 import BeautifulSoup
 
 from app.services.research.search_provider import ProviderRole, SearchProvider, SearchResult
 from app.logging import logger
@@ -141,7 +142,7 @@ class CommonCrawlProvider(SearchProvider):
                     
                     # If we get a 404 or 400, this crawl index doesn't exist, try next
                     if response.status_code in (404, 400, 500, 502, 503):
-                        logger.warning(f"[COMMONCRAWL] Crawl index {crawl_index} not available, trying next")
+                        logger.error(f"[COMMONCRAWL] Crawl index {crawl_index} not available, trying next")
                         continue
                     
                     response.raise_for_status()
@@ -167,7 +168,7 @@ class CommonCrawlProvider(SearchProvider):
             return []
                 
         except Exception as e:
-            logger.warning(f"[COMMONCRAWL] URL search failed for '{url}': {e}")
+            logger.error(f"[COMMONCRAWL] URL search failed for '{url}': {e}")
             return []
 
     async def _search_by_text(self, query: str, max_results: int) -> List[Dict[str, Any]]:
@@ -205,7 +206,7 @@ class CommonCrawlProvider(SearchProvider):
                 return results
                 
         except Exception as e:
-            logger.warning(f"[COMMONCRAWL] Text search failed for '{query}': {e}")
+            logger.error(f"[COMMONCRAWL] Text search failed for '{query}': {e}")
             return []
 
     def _format_cc_result(self, item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -239,7 +240,7 @@ class CommonCrawlProvider(SearchProvider):
             }
             
         except Exception as e:
-            logger.warning(f"[COMMONCRAWL] Failed to format result: {e}")
+            logger.error(f"[COMMONCRAWL] Failed to format result: {e}")
             return None
 
     def _normalize_for_cc(self, url: str) -> str:
@@ -353,7 +354,7 @@ class CommonCrawlProvider(SearchProvider):
                     return available_crawls
                 
         except Exception as e:
-            logger.warning(f"[COMMONCRAWL] Failed to discover available crawls: {e}")
+            logger.error(f"[COMMONCRAWL] Failed to discover available crawls: {e}")
         
         # Fallback: try a few recent crawls
         # Start from current date and go backwards

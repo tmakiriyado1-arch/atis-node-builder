@@ -101,7 +101,8 @@ class GDELTProvider(SearchProvider):
                 
                 data = response.json()
         except Exception as e:
-            logger.warning(f"[GDELT] Search failed for '{cleaned_query[:50]}': {e}")
+            error_type = type(e).__name__
+            logger.error(f"[GDELT] FAILED for '{cleaned_query[:50]}' - {error_type}: {e}")
             return []
         
         if not isinstance(data, dict):

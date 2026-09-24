@@ -167,7 +167,7 @@ class WikidataProvider(SearchProvider):
                 response.raise_for_status()
                 data = response.json()
         except Exception as e:
-            logger.warning(f"[WIKIDATA] Entity search failed for '{label[:50]}': {e}")
+            logger.error(f"[WIKIDATA] Entity search failed for '{label[:50]}': {e}")
             return None
         
         if not isinstance(data, dict):
@@ -203,7 +203,7 @@ class WikidataProvider(SearchProvider):
                 response.raise_for_status()
                 data = response.json()
         except Exception as e:
-            logger.warning(f"[WIKIDATA] Entity info failed for {entity_id}: {e}")
+            logger.error(f"[WIKIDATA] Entity info failed for {entity_id}: {e}")
             return None
         
         if not isinstance(data, dict):
@@ -245,7 +245,7 @@ class WikidataProvider(SearchProvider):
                 response.raise_for_status()
                 data = response.json()
         except Exception as e:
-            logger.warning(f"[WIKIDATA] SPARQL search failed for '{query[:50]}': {e}")
+            logger.error(f"[WIKIDATA] SPARQL search failed for '{query[:50]}': {e}")
             return []
         
         if not isinstance(data, dict):
@@ -379,7 +379,7 @@ class WikidataProvider(SearchProvider):
                 "zera.co.zw",
             ]
             if any(pattern in original_lower for pattern in zera_patterns):
-                logger.warning(f"[WIKIDATA] Rejecting Q1761087 (Zera insect genus) for query '{original_query}' - semantic mismatch")
+                logger.error(f"[WIKIDATA] Rejecting Q1761087 (Zera insect genus) for query '{original_query}' - semantic mismatch")
                 return False
         
         # Extract expected entity type from context
@@ -396,12 +396,12 @@ class WikidataProvider(SearchProvider):
             # Check if entity is a taxon (Q16521)
             taxon_id = "Q16521"  # Wikidata ID for taxon
             if taxon_id in instance_of_ids:
-                logger.warning(f"[WIKIDATA] Rejecting {entity_id} ({entity_label}) for '{original_query}' - is a taxon, expected organization")
+                logger.error(f"[WIKIDATA] Rejecting {entity_id} ({entity_label}) for '{original_query}' - is a taxon, expected organization")
                 return False
             
             # Check if entity is an insect genus
             if "insect" in entity_description or "genus" in entity_description:
-                logger.warning(f"[WIKIDATA] Rejecting {entity_id} ({entity_label}) for '{original_query}' - is an insect genus, expected organization")
+                logger.error(f"[WIKIDATA] Rejecting {entity_id} ({entity_label}) for '{original_query}' - is an insect genus, expected organization")
                 return False
         
         # If expected entity type is provided, check for compatibility
@@ -430,7 +430,7 @@ class WikidataProvider(SearchProvider):
                         "Q164518", # species
                     ]
                     if any(wid in instance_of_ids for wid in wrong_types):
-                        logger.warning(f"[WIKIDATA] Rejecting {entity_id} ({entity_label}) for '{original_query}' - type mismatch: expected organization, got {instance_of_ids}")
+                        logger.error(f"[WIKIDATA] Rejecting {entity_id} ({entity_label}) for '{original_query}' - type mismatch: expected organization, got {instance_of_ids}")
                         return False
         
         # If we have country context, check for compatibility

@@ -76,7 +76,7 @@ class DirectSiteCrawler(SearchProvider):
                 if len(all_results) >= max_results:
                     break
             except Exception as e:
-                logger.warning(f"[DIRECT_CRAWL] Failed to crawl {url}: {e}")
+                logger.error(f"[DIRECT_CRAWL] Failed to crawl {url}: {e}")
                 continue
         
         return self._format_as_search_results(all_results, query)[:max_results]
@@ -125,7 +125,7 @@ class DirectSiteCrawler(SearchProvider):
                         if link not in visited:
                             queue.append((link, depth + 1))
             except Exception as e:
-                logger.warning(f"[DIRECT_CRAWL] Failed to crawl {url}: {e}")
+                logger.error(f"[DIRECT_CRAWL] Failed to crawl {url}: {e}")
                 continue
         
         return results[:max_pages]
@@ -175,7 +175,7 @@ class DirectSiteCrawler(SearchProvider):
                 return [result]
                 
         except Exception as e:
-            logger.warning(f"[DIRECT_CRAWL] Failed to crawl {url}: {e}")
+            logger.error(f"[DIRECT_CRAWL] Failed to crawl {url}: {e}")
             return []
 
     async def _extract_links(self, url: str) -> List[str]:
@@ -204,7 +204,7 @@ class DirectSiteCrawler(SearchProvider):
                 return links[:50]  # Limit to 50 links
                 
         except Exception as e:
-            logger.warning(f"[DIRECT_CRAWL] Failed to extract links from {url}: {e}")
+            logger.error(f"[DIRECT_CRAWL] Failed to extract links from {url}: {e}")
             return []
 
     def _extract_main_content(self, soup: Any) -> str:
@@ -337,7 +337,7 @@ class DirectSiteCrawler(SearchProvider):
                 results = await self._crawl_url(url)
                 all_results.extend(results)
             except Exception as e:
-                logger.warning(f"[DIRECT_CRAWL] Failed to crawl {url}: {e}")
+                logger.error(f"[DIRECT_CRAWL] Failed to crawl {url}: {e}")
                 continue
         
         return self._format_as_search_results(all_results, query)

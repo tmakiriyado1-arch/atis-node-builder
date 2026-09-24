@@ -109,7 +109,8 @@ class MozillaProvider(SearchProvider):
                 
                 data = response.json()
         except Exception as e:
-            logger.warning(f"[MOZILLA] Search failed for '{query[:50]}': {e}")
+            error_type = type(e).__name__
+            logger.error(f"[MOZILLA] FAILED for '{query[:50]}' - {error_type}: {e}")
             return []
         
         if not isinstance(data, dict):

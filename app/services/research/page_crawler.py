@@ -215,7 +215,7 @@ class PageCrawler:
                 )
                 
         except httpx.TimeoutException as e:
-            logger.warning(f"[PAGE_CRAWLER] Timeout crawling {url}: {e}")
+            logger.error(f"[PAGE_CRAWLER] Timeout crawling {url}: {e}")
             return CrawlResult(
                 url=url,
                 final_url="",
@@ -232,7 +232,7 @@ class PageCrawler:
             )
             
         except httpx.HTTPStatusError as e:
-            logger.warning(f"[PAGE_CRAWLER] HTTP error crawling {url}: {e.response.status_code}")
+            logger.error(f"[PAGE_CRAWLER] HTTP error crawling {url}: {e.response.status_code}")
             status_code = e.response.status_code if e.response else 0
             return CrawlResult(
                 url=url,
@@ -250,7 +250,7 @@ class PageCrawler:
             )
             
         except httpx.ConnectError as e:
-            logger.warning(f"[PAGE_CRAWLER] Connection error crawling {url}: {e}")
+            logger.error(f"[PAGE_CRAWLER] Connection error crawling {url}: {e}")
             return CrawlResult(
                 url=url,
                 final_url="",
@@ -267,7 +267,7 @@ class PageCrawler:
             )
             
         except Exception as e:
-            logger.warning(f"[PAGE_CRAWLER] Error crawling {url}: {e}")
+            logger.error(f"[PAGE_CRAWLER] Error crawling {url}: {e}")
             return CrawlResult(
                 url=url,
                 final_url="",
@@ -408,7 +408,7 @@ class PageCrawler:
             return str(title).strip(), content.strip(), html
             
         except Exception as e:
-            logger.warning(f"[PAGE_CRAWLER] Failed to parse HTML from {url}: {e}")
+            logger.error(f"[PAGE_CRAWLER] Failed to parse HTML from {url}: {e}")
             return url, html[:1000], html  # Return raw content as fallback
 
     def _extract_main_content(self, soup: Any) -> str:
