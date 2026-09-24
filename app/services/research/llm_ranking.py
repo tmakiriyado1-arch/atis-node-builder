@@ -321,17 +321,13 @@ Required: Return ONLY valid JSON, no other text."""
             selection = json.loads(response)
             selected_indices = selection.get("selected_indices", [])
             
-            # Get selected results
+            # Get selected results in the order specified by LLM
             selected = []
             for idx in selected_indices:
                 if 0 <= idx < len(ranking_result.ranked_results):
                     selected.append(ranking_result.ranked_results[idx])
             
-            # Sort by index order (preserving LLM's ordering)
-            selected.sort(key=lambda r: selected_indices.index(r.evidence_record.url) 
-                          if r.evidence_record.url in [ranking_result.ranked_results[i].evidence_record.url 
-                                                       for i in selected_indices] else 0)
-            
+            # Return in the order the LLM specified (by index order)
             return [r.evidence_record for r in selected[:max_select]]
         except Exception as e:
             logger.error(f"[LLM_RANKER] Failed to parse selection: {e}")

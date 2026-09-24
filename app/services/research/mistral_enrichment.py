@@ -151,7 +151,12 @@ async def enrich_evidence_with_mistral(
         "- Do not fabricate facts.\n"
         "- If evidence is insufficient, return no claim.\n"
         "- Each claim must be traceable to the source URL(s) provided.\n"
-        "- Return JSON only.\n\n"
+        "- Return JSON only.\n"
+        "- Organize and clean the raw data into structured claims.\n"
+        "- Extract key metadata: entity type, country/region, sector, status, headquarters, website, etc.\n"
+        "- Extract relationships: what the entity regulates, manages, operates, owns, etc.\n"
+        "- Extract associations: what the entity is connected to, part of, member of, etc.\n"
+        "- Extract summary descriptions of what the entity does.\n\n"
         f"Entity: {entity_name or 'unknown'}\n"
         f"Evidence: {json.dumps(evidence_context, ensure_ascii=False)}\n\n"
         "Required JSON response: {\"claims\":[{\"subject\":\"\",\"predicate\":\"\",\"object\":\"\",\"claim_text\":\"\",\"evidence_urls\":[\"\"]}]}"
@@ -251,6 +256,7 @@ async def enrich_evidence_with_mistral(
                 confidence=0.0,
                 extraction_method="mistral",
                 extracted_at=datetime.now(timezone.utc),
+                evidence_urls=valid_urls,
             )
         )
 

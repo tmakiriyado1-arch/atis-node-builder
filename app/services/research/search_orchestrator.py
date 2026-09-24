@@ -451,6 +451,8 @@ class SearchOrchestrator:
         # Extract query variations as strings for ranking
         query_variation_strings = [qv.query for qv in query_variations] if query_variations else [query]
         
+        # Store ranking result for later use, but don't filter evidence here
+        # The ranking is for metadata/quality assessment, not for filtering
         if self.use_llm_ranking and self.llm_ranker and final_evidence:
             logger.info(f"[ORCHESTRATOR] Ranking {len(final_evidence)} evidence items with LLM")
             try:
@@ -462,18 +464,16 @@ class SearchOrchestrator:
                 )
                 self._llm_ranking_result = ranking_result
                 
-                # Select top results based on LLM ranking
+                # Select top results based on LLM ranking for metadata
+                # but keep ALL evidence for downstream processing
                 top_evidence = await self.llm_ranker.select_top_results(
                     ranking_result,
                     query,
                     max_results=self.TARGET_UNIQUE_URLS,
                 )
-                
-                # Use LLM-selected evidence as final evidence
-                final_evidence = top_evidence
-                logger.info(f"[ORCHESTRATOR] LLM selected {len(final_evidence)} top evidence items from {len(ranking_result.ranked_results)} ranked")
+                logger.info(f"[ORCHESTRATOR] LLM selected {len(top_evidence)} top evidence items from {len(ranking_result.ranked_results)} ranked")
             except Exception as e:
-                logger.warning(f"[ORCHESTRATOR] LLM ranking failed: {e}, using all evidence")
+                logger.warning(f"[ORCHESTRATOR] LLM ranking failed: {e}, continuing with all evidence")
                 self._llm_ranking_result = None
         
         # Phase 6: Determine status based on evidence quality

@@ -364,11 +364,25 @@ class ResearchEngine:
             result.status = "completed"  # Execution completed, even if no evidence
             return result
 
+        # Use full content from evidence for enrichment, not just snippets
+        # Pass the complete evidence records with full content
+        from copy import copy as copy_func
+        evidence_for_enrichment = []
+        for ev in deduped_evidence:
+            # Use full content if available, otherwise use snippet
+            if hasattr(ev, 'content') and ev.content:
+                # Create a copy with full content preserved
+                ev_copy = copy_func(ev)
+                ev_copy.snippet = ev.content
+                evidence_for_enrichment.append(ev_copy)
+            else:
+                evidence_for_enrichment.append(ev)
+        
         if self.llm_provider is not None:
             try:
                 claims = await enrich_evidence_with_mistral(
                     cleaned_name,
-                    deduped_evidence,
+                    evidence_for_enrichment,
                     api_key=getattr(self.llm_provider, "api_key", config.MISTRAL_API_KEY),
                     model=getattr(self.llm_provider, "model", config.MISTRAL_MODEL),
                 )
@@ -377,19 +391,23 @@ class ResearchEngine:
             if not claims:
                 claims = []
         if not claims:
+            # Fallback: use full content from evidence for claims
             for evidence in deduped_evidence:
                 field_name = (fields_to_research or ["entity_profile"])[0]
+                # Use full content if available, otherwise use snippet
+                content = getattr(evidence, 'content', None) or evidence.snippet or ""
                 claims.append(
                     ResearchClaim(
-                        claim=evidence.snippet,
+                        claim=content,
                         field_name=field_name,
                         source_url=evidence.url,
                         source_title=evidence.title or None,
-                        evidence_passage=evidence.snippet,
+                        evidence_passage=content,
                         source_type="webpage",
                         confidence=0.0,
                         extraction_method="search_result",
                         extracted_at=datetime.now(),
+                        evidence_urls=[evidence.url] if evidence.url else [],
                     )
                 )
 
