@@ -16,6 +16,13 @@ import httpx
 from bs4 import BeautifulSoup
 
 from app.logging import logger
+from app.services.research.evidence import (
+    ExtractionQuality,
+    RetrievalStatus,
+    EvidenceStatus,
+    classify_extraction_quality,
+    classify_evidence_status,
+)
 
 
 # Common tracking parameters to remove from URLs
@@ -47,6 +54,10 @@ class CrawlResult:
     retrieved_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     error: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    # Quality classification fields
+    retrieval_status: RetrievalStatus = RetrievalStatus.SUCCESS
+    extraction_quality: ExtractionQuality = ExtractionQuality.SUBSTANTIVE
+    evidence_status: EvidenceStatus = EvidenceStatus.USABLE
 
 
 @dataclass
@@ -115,6 +126,9 @@ class PageCrawler:
                 title="",
                 error="Invalid URL",
                 metadata=discovery_metadata or {},
+                retrieval_status=RetrievalStatus.CONNECTION_ERROR,
+                extraction_quality=ExtractionQuality.EMPTY,
+                evidence_status=EvidenceStatus.UNUSABLE,
             )
         
         try:
@@ -157,6 +171,9 @@ class PageCrawler:
                         title="",
                         error="Non-content URL (image, stylesheet, etc.)",
                         metadata=discovery_metadata or {},
+                        retrieval_status=RetrievalStatus.CONTENT_TYPE_REJECTED,
+                        extraction_quality=ExtractionQuality.EMPTY,
+                        evidence_status=EvidenceStatus.UNUSABLE,
                     )
                 
                 # Get raw content
@@ -167,7 +184,21 @@ class PageCrawler:
                     raw_content = raw_content[:self.max_content_length]
                 
                 # Extract title and content
-                title, content = self._extract_content(raw_content, content_type, final_url)
+                title, content, html_content = self._extract_content(raw_content, content_type, final_url)
+                
+                # Classify extraction quality
+                extraction_quality = classify_extraction_quality(
+                    content, 
+                    html_content if html_content else raw_content,
+                    final_url,
+                    status_code
+                )
+                
+                # Classify evidence status
+                evidence_status = classify_evidence_status(
+                    extraction_quality,
+                    RetrievalStatus.SUCCESS
+                )
                 
                 return CrawlResult(
                     url=url,
@@ -178,6 +209,9 @@ class PageCrawler:
                     content_type=content_type,
                     title=title,
                     metadata=discovery_metadata or {},
+                    retrieval_status=RetrievalStatus.SUCCESS,
+                    extraction_quality=extraction_quality,
+                    evidence_status=evidence_status,
                 )
                 
         except httpx.TimeoutException as e:
@@ -192,20 +226,27 @@ class PageCrawler:
                 title="",
                 error=f"Timeout: {e}",
                 metadata=discovery_metadata or {},
+                retrieval_status=RetrievalStatus.TIMEOUT,
+                extraction_quality=ExtractionQuality.EMPTY,
+                evidence_status=EvidenceStatus.UNUSABLE,
             )
             
         except httpx.HTTPStatusError as e:
             logger.warning(f"[PAGE_CRAWLER] HTTP error crawling {url}: {e.response.status_code}")
+            status_code = e.response.status_code if e.response else 0
             return CrawlResult(
                 url=url,
                 final_url=str(e.response.url) if e.response else "",
-                status_code=e.response.status_code if e.response else 0,
+                status_code=status_code,
                 success=False,
                 content="",
                 content_type="",
                 title="",
-                error=f"HTTP {e.response.status_code}" if e.response else "HTTP error",
+                error=f"HTTP {status_code}" if status_code else "HTTP error",
                 metadata=discovery_metadata or {},
+                retrieval_status=RetrievalStatus.HTTP_ERROR,
+                extraction_quality=ExtractionQuality.EMPTY,
+                evidence_status=EvidenceStatus.UNUSABLE,
             )
             
         except httpx.ConnectError as e:
@@ -220,6 +261,9 @@ class PageCrawler:
                 title="",
                 error=f"Connection failed: {e}",
                 metadata=discovery_metadata or {},
+                retrieval_status=RetrievalStatus.CONNECTION_ERROR,
+                extraction_quality=ExtractionQuality.EMPTY,
+                evidence_status=EvidenceStatus.UNUSABLE,
             )
             
         except Exception as e:
@@ -234,6 +278,9 @@ class PageCrawler:
                 title="",
                 error=str(e),
                 metadata=discovery_metadata or {},
+                retrieval_status=RetrievalStatus.CONNECTION_ERROR,
+                extraction_quality=ExtractionQuality.EMPTY,
+                evidence_status=EvidenceStatus.UNUSABLE,
             )
 
     async def crawl_urls(
@@ -326,15 +373,15 @@ class PageCrawler:
         html: str,
         content_type: str,
         url: str,
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str, str]:
         """Extract title and main content from HTML.
         
         Returns:
-            (title, content_text)
+            (title, content_text, html_content)
         """
         if "text/html" not in content_type:
             # For non-HTML, return as-is
-            return url, html
+            return url, html, html
         
         try:
             soup = BeautifulSoup(html, "html.parser")
@@ -358,11 +405,11 @@ class PageCrawler:
             if not content:
                 content = html[:1000]  # Last resort: first 1000 chars
             
-            return str(title).strip(), content.strip()
+            return str(title).strip(), content.strip(), html
             
         except Exception as e:
             logger.warning(f"[PAGE_CRAWLER] Failed to parse HTML from {url}: {e}")
-            return url, html[:1000]  # Return raw content as fallback
+            return url, html[:1000], html  # Return raw content as fallback
 
     def _extract_main_content(self, soup: Any) -> str:
         """Extract main content from BeautifulSoup object."""

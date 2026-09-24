@@ -8,7 +8,7 @@ from typing import Any, Iterable, List, Sequence
 import httpx
 
 from app import config
-from app.services.research.evidence import EvidenceRecord
+from app.services.research.evidence import EvidenceRecord, EvidenceStatus, ExtractionQuality
 
 
 def _canonical_url_map(evidence_records: Sequence[EvidenceRecord]) -> dict[str, EvidenceRecord]:
@@ -35,6 +35,78 @@ def _dedupe_claim_texts(claims: Iterable[str]) -> List[str]:
     return deduped
 
 
+def _create_evidence_chunks(
+    evidence_records: Sequence[EvidenceRecord],
+    max_chunk_size: int = 2000,
+    overlap: int = 200,
+) -> List[Dict[str, Any]]:
+    """Create deterministic chunks from evidence content.
+    
+    This function creates overlapping chunks from the full content of evidence records,
+    ensuring that Mistral receives substantive evidence rather than just the first 2000 chars.
+    
+    Args:
+        evidence_records: List of evidence records with full content
+        max_chunk_size: Maximum size of each chunk (default 2000 chars)
+        overlap: Number of overlapping characters between chunks (default 200)
+        
+    Returns:
+        List of chunk dicts with provenance information
+    """
+    chunks = []
+    
+    for record in evidence_records:
+        if not record or not record.url:
+            continue
+        
+        # Use full content if available, otherwise fall back to snippet
+        content = getattr(record, 'content', None) or record.snippet or ""
+        
+        # Skip if content is empty or evidence is unusable
+        if not content.strip():
+            continue
+        
+        # Skip if evidence is marked as unusable
+        if hasattr(record, 'evidence_status') and record.evidence_status == EvidenceStatus.UNUSABLE:
+            continue
+        
+        # If content is short enough, use as single chunk
+        if len(content) <= max_chunk_size:
+            chunks.append({
+                "url": record.url,
+                "title": record.title,
+                "content": content,
+                "source": record.source,
+                "query": record.query,
+                "chunk_index": 0,
+                "total_chunks": 1,
+            })
+            continue
+        
+        # Split long content into overlapping chunks
+        start = 0
+        chunk_index = 0
+        while start < len(content):
+            end = min(start + max_chunk_size, len(content))
+            chunk = content[start:end]
+            
+            chunks.append({
+                "url": record.url,
+                "title": record.title,
+                "content": chunk,
+                "source": record.source,
+                "query": record.query,
+                "chunk_index": chunk_index,
+                "total_chunks": (len(content) + max_chunk_size - overlap - 1) // (max_chunk_size - overlap),
+            })
+            
+            # Move to next chunk with overlap
+            start = end - overlap if end > overlap else end
+            chunk_index += 1
+    
+    return chunks
+
+
 async def enrich_evidence_with_mistral(
     entity_name: str,
     evidence_records: Sequence[EvidenceRecord],
@@ -51,29 +123,34 @@ async def enrich_evidence_with_mistral(
         return []
 
     url_map = _canonical_url_map(evidence_records)
+    
+    # Create deterministic chunks from full content
+    evidence_chunks = _create_evidence_chunks(evidence_records)
+    
+    # Build evidence context with full content chunks
     evidence_context = []
-    for record in evidence_records:
-        if not record or not record.url:
-            continue
-        evidence_context.append(
-            {
-                "title": record.title,
-                "url": record.url,
-                "snippet": record.snippet,
-                "source": record.source,
-                "query": record.query,
-            }
-        )
+    for chunk in evidence_chunks:
+        evidence_context.append({
+            "title": chunk["title"],
+            "url": chunk["url"],
+            "content": chunk["content"],
+            "source": chunk["source"],
+            "query": chunk["query"],
+            "chunk_index": chunk["chunk_index"],
+            "total_chunks": chunk["total_chunks"],
+        })
 
     prompt = (
-        "You are extracting candidate research claims.\n"
-        "You receive an entity and evidence records.\n"
+        "You are extracting candidate research claims from full evidence content.\n"
+        "You receive an entity and evidence content chunks (from full page crawls).\n"
         "Rules:\n"
-        "- Only use the supplied evidence.\n"
+        "- Only use the supplied evidence content.\n"
         "- Do not use outside knowledge.\n"
         "- Do not guess.\n"
         "- Do not invent URLs.\n"
+        "- Do not fabricate facts.\n"
         "- If evidence is insufficient, return no claim.\n"
+        "- Each claim must be traceable to the source URL(s) provided.\n"
         "- Return JSON only.\n\n"
         f"Entity: {entity_name or 'unknown'}\n"
         f"Evidence: {json.dumps(evidence_context, ensure_ascii=False)}\n\n"

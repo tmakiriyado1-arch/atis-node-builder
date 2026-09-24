@@ -145,10 +145,32 @@ class EntityPipelineService:
         if hasattr(research_result, 'research_status'):
             pipeline_logger.info(f"[PIPELINE {source_entity_id}] Research status={research_result.research_status}, succeeded={len(research_result.providers_succeeded)}, failed={len(research_result.providers_failed)}")
 
-        if research_result.status != "completed" or not result.evidence:
-            pipeline_logger.error(f"[PIPELINE {source_entity_id}] RESEARCH FAILED: {research_result.error_message}")
+        # IMPORTANT: Check research_status (quality) NOT just execution status
+        # research_result.status is execution status ("started", "completed", "failed")
+        # research_result.research_status is research quality (COMPLETE, PARTIAL, DEGRADED, INSUFFICIENT, UNAVAILABLE)
+        from app.services.research.search_orchestrator import ResearchStatus
+        
+        # If execution failed, stop here
+        if research_result.status != "completed":
+            pipeline_logger.error(f"[PIPELINE {source_entity_id}] RESEARCH EXECUTION FAILED: {research_result.error_message}")
             result.status = "failed"
-            result.error_message = research_result.error_message or "Research did not produce usable evidence."
+            result.error_message = research_result.error_message or "Research execution did not complete."
+            return result
+        
+        # If execution completed but research quality is insufficient, stop here
+        # This is the critical quality gate: PARTIAL/DEGRADED/INSUFFICIENT/UNAVAILABLE must NOT proceed
+        if hasattr(research_result, 'research_status'):
+            if research_result.research_status not in (ResearchStatus.COMPLETE,):
+                pipeline_logger.error(f"[PIPELINE {source_entity_id}] RESEARCH QUALITY INSUFFICIENT: status={research_result.research_status}")
+                result.status = "insufficient"
+                result.error_message = f"Research quality is {research_result.research_status.value}: not enough trustworthy evidence to establish node."
+                return result
+        
+        # If no evidence at all, fail
+        if not result.evidence:
+            pipeline_logger.error(f"[PIPELINE {source_entity_id}] NO EVIDENCE: {research_result.error_message}")
+            result.status = "failed"
+            result.error_message = research_result.error_message or "No usable evidence was collected."
             return result
 
         claims = await self._enrich_entity(entity_name, result.evidence, entity=rita_entity)

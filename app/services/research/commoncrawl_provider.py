@@ -121,26 +121,50 @@ class CommonCrawlProvider(SearchProvider):
                 "limit": str(min(max_results, 50)),
             }
             
-            async with httpx.AsyncClient(headers=self.headers, timeout=self.timeout) as client:
-                response = await client.get(self.index_url, params=params)
-                response.raise_for_status()
+            # Try multiple crawl indexes if the first one fails
+            # Use async version to properly discover available indexes
+            latest_crawl = await self._get_latest_crawl_async()
+            crawl_indexes = [latest_crawl]
+            
+            for crawl_index in crawl_indexes:
+                params = {
+                    "url": search_url,
+                    "output": "json",
+                    "limit": str(min(max_results, 50)),
+                }
                 
-                # Handle empty or invalid JSON response
-                try:
-                    data = response.json()
-                except Exception:
-                    return []
+                # Try with this crawl index
+                index_url = f"https://index.commoncrawl.org/{crawl_index}"
                 
-                if not isinstance(data, list):
-                    return []
-                
-                results = []
-                for item in data[:max_results]:
-                    result = self._format_cc_result(item)
-                    if result:
-                        results.append(result)
-                
-                return results
+                async with httpx.AsyncClient(headers=self.headers, timeout=self.timeout) as client:
+                    response = await client.get(index_url, params=params)
+                    
+                    # If we get a 404 or 400, this crawl index doesn't exist, try next
+                    if response.status_code in (404, 400, 500, 502, 503):
+                        logger.warning(f"[COMMONCRAWL] Crawl index {crawl_index} not available, trying next")
+                        continue
+                    
+                    response.raise_for_status()
+                    
+                    # Handle empty or invalid JSON response
+                    try:
+                        data = response.json()
+                    except Exception:
+                        continue
+                    
+                    if not isinstance(data, list):
+                        continue
+                    
+                    results = []
+                    for item in data[:max_results]:
+                        result = self._format_cc_result(item)
+                        if result:
+                            results.append(result)
+                    
+                    if results:
+                        return results
+            
+            return []
                 
         except Exception as e:
             logger.warning(f"[COMMONCRAWL] URL search failed for '{url}': {e}")
@@ -279,13 +303,136 @@ class CommonCrawlProvider(SearchProvider):
         except Exception:
             return ""
 
-    def _get_latest_crawl(self) -> str:
-        """Get the latest Common Crawl index identifier."""
-        # This is a simplified version - in production you'd want to
-        # query the available crawls or use a known latest one
-        # Format is typically like "2024-51" (year-week)
+    async def _get_available_crawl_indexes(self) -> List[str]:
+        """Get list of available Common Crawl index identifiers.
+        
+        Attempts to discover actually available indexes by checking the CDXJ API.
+        Returns list of available indexes sorted by recency (newest first).
+        """
         import datetime
+        
+        # Try to get list of available crawls from Common Crawl
+        # The index is at https://index.commoncrawl.org/ and lists available crawls
+        try:
+            async with httpx.AsyncClient(headers=self.headers, timeout=self.timeout) as client:
+                # Try to fetch the main index page which lists available crawls
+                response = await client.get("https://index.commoncrawl.org/", timeout=10.0)
+                response.raise_for_status()
+                
+                # Parse the HTML to find available crawl links
+                html = response.text
+                soup = BeautifulSoup(html, "html.parser")
+                
+                # Look for links that match crawl index pattern (CC-MAIN-YYYY-WW)
+                crawl_pattern = re.compile(r'CC-MAIN-(\d{4})-(\d{1,2})')
+                available_crawls = []
+                
+                for a in soup.find_all("a", href=True):
+                    href = a["href"].strip()
+                    match = crawl_pattern.search(href)
+                    if match:
+                        # Extract the crawl identifier
+                        crawl_id = match.group(0)
+                        if crawl_id not in available_crawls:
+                            available_crawls.append(crawl_id)
+                
+                # Sort by year and week (newest first)
+                def sort_key(crawl_id: str) -> tuple:
+                    # Extract year and week from CC-MAIN-YYYY-WW
+                    match = crawl_pattern.search(crawl_id)
+                    if match:
+                        year = int(match.group(1))
+                        week = int(match.group(2))
+                        return (year, week)
+                    return (0, 0)
+                
+                available_crawls.sort(key=sort_key, reverse=True)
+                
+                if available_crawls:
+                    logger.info(f"[COMMONCRAWL] Found {len(available_crawls)} available crawls: {available_crawls[:5]}")
+                    return available_crawls
+                
+        except Exception as e:
+            logger.warning(f"[COMMONCRAWL] Failed to discover available crawls: {e}")
+        
+        # Fallback: try a few recent crawls
+        # Start from current date and go backwards
+        now = datetime.datetime.now()
+        fallback_crawls = []
+        
+        for weeks_back in range(0, 10):  # Try up to 10 weeks back
+            test_date = now - datetime.timedelta(weeks=weeks_back)
+            year = test_date.year
+            week = test_date.isocalendar()[1]
+            crawl_id = f"{year}-{week:02d}"
+            fallback_crawls.append(f"CC-MAIN-{crawl_id}")
+        
+        logger.info(f"[COMMONCRAWL] Using fallback crawls: {fallback_crawls[:3]}")
+        return fallback_crawls
+    
+    async def _get_latest_crawl_async(self) -> str:
+        """Get the latest Common Crawl index identifier asynchronously.
+        
+        This method tries to discover available crawls by checking the CDXJ API.
+        If discovery fails, it falls back to trying recent crawls.
+        """
+        import datetime
+        
+        # Try to discover available crawls
+        available = await self._get_available_crawl_indexes()
+        if available:
+            return available[0]  # Return the newest
+        
+        # Fallback: try recent crawls
         now = datetime.datetime.now()
         year = now.year
         week = now.isocalendar()[1]
-        return f"{year}-{week:02d}"
+        
+        # Try this week and previous weeks
+        for weeks_back in range(0, 10):
+            test_week = week - weeks_back
+            if test_week < 1:
+                # Wrap to previous year
+                year -= 1
+                test_week = 52  # Last week of previous year
+            crawl_id = f"CC-MAIN-{year}-{test_week:02d}"
+            
+            # Try to verify this index exists
+            try:
+                async with httpx.AsyncClient(headers=self.headers, timeout=5.0) as client:
+                    # Try a simple query to see if the index exists
+                    test_url = f"https://index.commoncrawl.org/{crawl_id}"
+                    response = await client.get(test_url, params={"url": "example.com", "output": "json", "limit": "1"})
+                    
+                    # If we get a valid response (not 404/400), this index exists
+                    if response.status_code not in (404, 400, 500, 502, 503):
+                        logger.info(f"[COMMONCRAWL] Verified available crawl index: {crawl_id}")
+                        return crawl_id
+            except Exception:
+                continue
+        
+        # Ultimate fallback - return the most recent format
+        return f"CC-MAIN-{year}-{week:02d}"
+    
+    def _get_latest_crawl(self) -> str:
+        """Get the latest Common Crawl index identifier.
+        
+        Synchronous version for backward compatibility.
+        Returns a reasonable guess based on current date.
+        """
+        import datetime
+        
+        now = datetime.datetime.now()
+        year = now.year
+        week = now.isocalendar()[1]
+        
+        # Try this week and previous weeks
+        for weeks_back in range(0, 5):
+            test_week = week - weeks_back
+            if test_week < 1:
+                # Wrap to previous year
+                year -= 1
+                test_week = 52  # Last week of previous year
+            return f"CC-MAIN-{year}-{test_week:02d}"
+        
+        return f"CC-MAIN-{year}-{week:02d}"

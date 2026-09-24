@@ -69,13 +69,17 @@ class ResearchResult:
     summary: str = ""
     sources_count: int = 0
     research_completed_at: datetime = field(default_factory=datetime.now)
-    status: str = "completed"
+    status: str = "completed"  # Execution status: started, completed, failed
     error_message: Optional[str] = None
     evidence: List[EvidenceRecord] = field(default_factory=list)
-    research_status: ResearchStatus = ResearchStatus.COMPLETE
+    research_status: ResearchStatus = ResearchStatus.COMPLETE  # Research quality status
     providers_attempted: List[str] = field(default_factory=list)
     providers_succeeded: List[str] = field(default_factory=list)
     providers_failed: List[str] = field(default_factory=list)
+    # Quality metrics
+    substantive_evidence_count: int = 0
+    thin_evidence_count: int = 0
+    unusable_evidence_count: int = 0
 
     def add_claim(
         self,
@@ -285,6 +289,21 @@ class ResearchEngine:
             # Get evidence from orchestrator
             deduped_evidence = orchestrator_result.evidence
             
+            # Store orchestrator quality metrics
+            result.substantive_evidence_count = getattr(orchestrator_result, 'substantive_evidence_count', 0)
+            result.thin_evidence_count = getattr(orchestrator_result, 'thin_evidence_count', 0)
+            result.unusable_evidence_count = getattr(orchestrator_result, 'unusable_evidence_count', 0)
+            
+            # If orchestrator returned no evidence but has a status, check if we should fail
+            # IMPORTANT: Do NOT fail execution here based on research quality.
+            # Execution status (status field) and research quality (research_status field) are separate.
+            # The orchestrator always returns a result even if research quality is degraded.
+            # We preserve the orchestrator's research_status but keep execution status as "completed".
+            if not deduped_evidence:
+                # No evidence found, but execution completed
+                # research_status already reflects the quality (INSUFFICIENT, UNAVAILABLE, etc.)
+                result.summary = f"Research completed with {orchestrator_result.status.value} quality: no sufficient public evidence was available for this entity."
+            
             logger.info(f"[RESEARCH {cleaned_name}] Orchestrator status={orchestrator_result.status}, evidence={len(deduped_evidence)}, succeeded={len(orchestrator_result.providers_succeeded)}, failed={len(orchestrator_result.providers_failed)}")
             
             # Log which providers succeeded/failed
@@ -331,12 +350,18 @@ class ResearchEngine:
                         logger.info(f"[RESEARCH {cleaned_name}] Found evidence: {record.title[:50] if record.title else 'None'} - {record.url[:60] if record.url else 'None'}")
 
             deduped_evidence = deduplicate_evidence(evidence_records)
+        
+        # Only set execution status to failed if there's no evidence AND no orchestrator result
+        # If we have orchestrator_result, the research_status already reflects the quality
         if not deduped_evidence:
+            # Execution completed but no evidence found
+            # research_status already set by orchestrator (INSUFFICIENT, UNAVAILABLE, etc.)
             result.error_message = (
                 f"No usable search results were returned for '{cleaned_name}'. "
                 "The provider did not surface enough public evidence to continue this slice."
             )
             result.summary = "No public evidence was available for this entity in the current research slice."
+            result.status = "completed"  # Execution completed, even if no evidence
             return result
 
         if self.llm_provider is not None:
@@ -371,10 +396,18 @@ class ResearchEngine:
         result.claims = claims
         result.evidence = deduped_evidence
         result.sources_count = len(deduped_evidence)
+        
+        # Set execution status to completed (separate from research_status)
         result.status = "completed"
         result.research_completed_at = datetime.now()
+        
+        # Build summary with quality metrics if available
+        quality_info = ""
+        if hasattr(result, 'substantive_evidence_count'):
+            quality_info = f" (Substantive: {result.substantive_evidence_count}, Thin: {getattr(result, 'thin_evidence_count', 0)}, Unusable: {getattr(result, 'unusable_evidence_count', 0)})"
+        
         result.summary = (
-            f"Searched for '{cleaned_name}' and collected {len(deduped_evidence)} deduplicated evidence record(s). "
+            f"Searched for '{cleaned_name}' and collected {len(deduped_evidence)} deduplicated evidence record(s){quality_info}. "
             "Candidate claims were produced only from the supplied evidence. No facts were verified."
         )
         return result
