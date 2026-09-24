@@ -272,6 +272,7 @@ class SearchOrchestrator:
                         all_search_results.extend(result.raw_results)
                         
                         # Propagate verified official_website to context for Phase 1b
+                        # Check both evidence (dicts) and raw_results (SearchResult objects)
                         if isinstance(result.evidence, list):
                             for item in result.evidence:
                                 if isinstance(item, dict):
@@ -282,7 +283,19 @@ class SearchOrchestrator:
                                             context = {}
                                         if "official_website" not in context:
                                             context["official_website"] = official_website
-                                            logger.info(f"[ORCHESTRATOR] Phase 1a: Propagated official_website to context: {official_website}")
+                                            logger.info(f"[ORCHESTRATOR] Phase 1a: Propagated official_website to context from evidence: {official_website}")
+                        
+                        # Also check raw_results (SearchResult objects) for metadata
+                        for search_result in result.raw_results:
+                            if hasattr(search_result, 'metadata') and search_result.metadata:
+                                metadata = search_result.metadata
+                                if isinstance(metadata, dict) and "official_website" in metadata:
+                                    official_website = metadata["official_website"]
+                                    if context is None:
+                                        context = {}
+                                    if "official_website" not in context:
+                                        context["official_website"] = official_website
+                                        logger.info(f"[ORCHESTRATOR] Phase 1a: Propagated official_website to context from raw_results: {official_website}")
                         
                         logger.info(f"[ORCHESTRATOR] Provider {provider_name} returned {len(result.raw_results)} results")
                     else:

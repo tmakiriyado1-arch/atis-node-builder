@@ -115,6 +115,10 @@ class WikidataProvider(SearchProvider):
                         context
                     )
                     if semantic_ok:
+                        # Enhance SPARQL results with full entity data including URLs
+                        full_entity_data = await self._get_entity_info(entity_id)
+                        if full_entity_data:
+                            sparql_result = self._format_entity_result_with_urls(full_entity_data, cleaned_query)
                         validated_sparql_results.append(sparql_result)
                     else:
                         logger.info(f"[WIKIDATA] Semantic validation rejected SPARQL result {entity_id} for query '{cleaned_query}'")
@@ -142,6 +146,10 @@ class WikidataProvider(SearchProvider):
                         context
                     )
                     if semantic_ok:
+                        # Enhance variant results with full entity data
+                        full_entity_data = await self._get_entity_info(entity_id)
+                        if full_entity_data:
+                            vr = self._format_entity_result_with_urls(full_entity_data, cleaned_query)
                         validated_variant_results.append(vr)
                     else:
                         logger.info(f"[WIKIDATA] Semantic validation rejected SPARQL variant result {entity_id} for query '{cleaned_query}'")
@@ -605,5 +613,43 @@ class WikidataProvider(SearchProvider):
         # Only add metadata if we have any
         if metadata:
             result["metadata"] = metadata
+        
+        return result
+
+    def _format_entity_result_with_urls(
+        self,
+        entity_data: Dict[str, Any],
+        query: str,
+    ) -> Dict[str, Any]:
+        """Format Wikidata entity information including all known URLs.
+        
+        Includes structured metadata for identity resolution and official-source discovery.
+        Also extracts Wikipedia URL and official website for crawling.
+        """
+        result = self._format_entity_result(entity_data, query)
+        
+        # Add direct URLs to metadata for DirectSiteCrawler
+        claims = entity_data.get("claims", {})
+        
+        # Official website (P856)
+        if "P856" in claims:
+            for claim in claims["P856"]:
+                url = claim.get("mainsnak", {}).get("datavalue", {}).get("value", "")
+                if url and url not in result.get("metadata", {}).get("official_website", ""):
+                    if "metadata" not in result:
+                        result["metadata"] = {}
+                    result["metadata"]["official_website"] = url
+                    result["metadata"]["urls"] = result["metadata"].get("urls", []) + [url]
+        
+        # Wikipedia URL from sitelinks
+        sitelinks = entity_data.get("sitelinks", {})
+        if "enwiki" in sitelinks:
+            wikipedia_title = sitelinks["enwiki"].get("title", "")
+            if wikipedia_title:
+                wikipedia_url = f"https://en.wikipedia.org/wiki/{wikipedia_title}"
+                if "metadata" not in result:
+                    result["metadata"] = {}
+                result["metadata"]["wikipedia_url"] = wikipedia_url
+                result["metadata"]["urls"] = result["metadata"].get("urls", []) + [wikipedia_url]
         
         return result
