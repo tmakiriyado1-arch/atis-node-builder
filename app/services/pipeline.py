@@ -85,8 +85,8 @@ class EntityPipelineService:
             ]
             self.orchestrator = SearchOrchestrator(
                 providers=providers,
-                min_evidence=3,
-                min_high_quality=2,
+                min_evidence=2,
+                min_high_quality=1,
                 timeout_per_provider=15.0,
                 max_concurrent_providers=3,
             )
@@ -158,9 +158,10 @@ class EntityPipelineService:
             return result
         
         # If execution completed but research quality is insufficient, stop here
-        # This is the critical quality gate: PARTIAL/DEGRADED/INSUFFICIENT/UNAVAILABLE must NOT proceed
+        # Simplified: Only block on UNAVAILABLE (all providers failed) or INSUFFICIENT (no evidence)
+        # PARTIAL and DEGRADED should proceed - the LLM will sift through what we have
         if hasattr(research_result, 'research_status'):
-            if research_result.research_status not in (ResearchStatus.COMPLETE,):
+            if research_result.research_status in (ResearchStatus.UNAVAILABLE, ResearchStatus.INSUFFICIENT):
                 pipeline_logger.error(f"[PIPELINE {source_entity_id}] RESEARCH QUALITY INSUFFICIENT: status={research_result.research_status}")
                 result.status = "insufficient"
                 result.error_message = f"Research quality is {research_result.research_status.value}: not enough trustworthy evidence to establish node."

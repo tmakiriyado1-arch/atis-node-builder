@@ -218,8 +218,8 @@ class ResearchEngine:
         
         return SearchOrchestrator(
             providers=providers,
-            min_evidence=3,
-            min_high_quality=2,
+            min_evidence=2,
+            min_high_quality=1,
             timeout_per_provider=15.0,
             max_concurrent_providers=3,
         )

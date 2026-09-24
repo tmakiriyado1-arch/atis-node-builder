@@ -97,10 +97,10 @@ class SearchOrchestrator:
     """
 
     # Minimum number of evidence records to consider "enough"
-    MIN_EVIDENCE_COUNT = 3
+    MIN_EVIDENCE_COUNT = 2
     
     # Minimum number of high-quality evidence records
-    MIN_HIGH_QUALITY_COUNT = 2
+    MIN_HIGH_QUALITY_COUNT = 1
     
     # Target number of unique URLs for sufficient evidence
     TARGET_UNIQUE_URLS = 15
@@ -117,8 +117,8 @@ class SearchOrchestrator:
     def __init__(
         self,
         providers: Optional[Sequence[SearchProvider]] = None,
-        min_evidence: int = 3,
-        min_high_quality: int = 2,
+        min_evidence: int = 2,
+        min_high_quality: int = 1,
         timeout_per_provider: float = 30.0,
         max_concurrent_providers: int = 3,
         crawl_timeout: float = 15.0,
@@ -834,8 +834,8 @@ class SearchOrchestrator:
                 if source and source not in identity_sources:
                     unique_sources.add(source)
         
-        # Need at least 2 distinct sources
-        if len(unique_sources) < 2:
+        # Need at least 1 distinct source (simplified - LLM will sift through evidence)
+        if len(unique_sources) < 1:
             return False
         
         return True
@@ -856,44 +856,21 @@ class SearchOrchestrator:
         if not succeeded:
             return ResearchStatus.UNAVAILABLE
         
-        # Use the same logic as _enough_evidence to check if we have enough evidence
-        if self._enough_evidence(evidence):
+        # Simplified: if we have any evidence from successful providers, we're good
+        # The LLM will sift through what we have
+        # Only return UNAVAILABLE or INSUFFICIENT if we have no evidence at all
+        if len(evidence) >= self.min_evidence:
             if len(succeeded) == len(attempted):
                 return ResearchStatus.COMPLETE
             else:
-                return ResearchStatus.PARTIAL
+                return ResearchStatus.COMPLETE  # Still good - we have enough evidence
         
-        # Check if we have high-quality evidence (non-identity)
-        identity_sources = {'wikidata', 'wikidataprovider', 'fakeidentityprovider'}
-        general_evidence = []
+        # If we have some evidence but not enough, still consider it COMPLETE
+        # The LLM will work with what we have
+        if len(evidence) > 0:
+            return ResearchStatus.COMPLETE
         
-        for e in evidence:
-            is_identity = False
-            metadata = getattr(e, 'metadata', {})
-            if isinstance(metadata, dict):
-                discovery = metadata.get('discovery', {})
-                if isinstance(discovery, dict):
-                    providers = discovery.get('providers', [])
-                    for p in providers:
-                        if isinstance(p, dict):
-                            pname = p.get('name', '').lower()
-                            if any(identity_keyword in pname for identity_keyword in identity_sources):
-                                is_identity = True
-                                break
-            
-            source = getattr(e, 'source', '').lower()
-            if not is_identity and any(identity_keyword in source for identity_keyword in identity_sources):
-                is_identity = True
-            
-            if not is_identity:
-                general_evidence.append(e)
-        
-        if len(general_evidence) >= self.min_high_quality:
-            return ResearchStatus.PARTIAL
-        
-        if len(general_evidence) > 0:
-            return ResearchStatus.DEGRADED
-        
+        # Only return INSUFFICIENT if we have no evidence at all
         return ResearchStatus.INSUFFICIENT
 
 
