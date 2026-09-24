@@ -99,17 +99,55 @@ class WikidataProvider(SearchProvider):
             return self._to_search_results(results, cleaned_query)[:max_results]
         
         # If direct lookup fails, try SPARQL search with original query
-        results = await self._sparql_search(cleaned_query, max_results)
-        if results:
-            logger.info(f"[WIKIDATA] SPARQL search returned {len(results)} results")
-            return self._to_search_results(results, cleaned_query)[:max_results]
+        # IMPORTANT: Apply semantic validation to SPARQL results too
+        # to prevent rejected candidate metadata from contaminating context
+        sparql_results = await self._sparql_search(cleaned_query, max_results)
+        if sparql_results:
+            # Filter SPARQL results through semantic validation
+            validated_sparql_results = []
+            for sparql_result in sparql_results:
+                entity_id = sparql_result.get("entity_id", "")
+                if entity_id:
+                    semantic_ok = await self._semantic_match(
+                        entity_id,
+                        sparql_result.get("title", ""),
+                        cleaned_query,
+                        context
+                    )
+                    if semantic_ok:
+                        validated_sparql_results.append(sparql_result)
+                    else:
+                        logger.info(f"[WIKIDATA] Semantic validation rejected SPARQL result {entity_id} for query '{cleaned_query}'")
+                else:
+                    validated_sparql_results.append(sparql_result)
+            
+            if validated_sparql_results:
+                logger.info(f"[WIKIDATA] SPARQL search returned {len(validated_sparql_results)} validated results")
+                return self._to_search_results(validated_sparql_results, cleaned_query)[:max_results]
         
         # Try SPARQL with variants
         for variant in query_variants:
             if len(results) >= max_results:
                 break
             variant_results = await self._sparql_search(variant, max_results - len(results))
-            results.extend(variant_results)
+            # Apply semantic validation to variant results too
+            validated_variant_results = []
+            for vr in variant_results:
+                entity_id = vr.get("entity_id", "")
+                if entity_id:
+                    semantic_ok = await self._semantic_match(
+                        entity_id,
+                        vr.get("title", ""),
+                        cleaned_query,
+                        context
+                    )
+                    if semantic_ok:
+                        validated_variant_results.append(vr)
+                    else:
+                        logger.info(f"[WIKIDATA] Semantic validation rejected SPARQL variant result {entity_id} for query '{cleaned_query}'")
+                else:
+                    validated_variant_results.append(vr)
+            results.extend(validated_variant_results)
         
         return self._to_search_results(results, cleaned_query)[:max_results]
 

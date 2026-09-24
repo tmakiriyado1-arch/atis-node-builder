@@ -519,7 +519,7 @@ class TestDirectSiteCrawlerSequencing:
     
     @pytest.mark.asyncio
     async def test_orchestrator_phases_identity_first(self):
-        """Test that orchestrator runs identity providers in Phase 1a before others."""
+        """Test that orchestrator runs identity/reference providers in Phase 1a before official_source in Phase 1b."""
         from app.services.research.search_provider import ProviderRole, SearchProvider, SearchResult
         from app.services.research.wikipedia_provider import WikipediaProvider
         from app.services.research.wikidata_provider import WikidataProvider
@@ -546,23 +546,79 @@ class TestDirectSiteCrawlerSequencing:
             max_concurrent_providers=2,
         )
         
-        # Verify that identity providers are separated
-        identity_providers = []
-        other_providers = []
+        # Verify that providers are separated into correct phases
+        # Phase 1a: IDENTITY and REFERENCE
+        # Phase 1b: OFFICIAL_SOURCE
+        # Phase 2: WEB_DISCOVERY and others
+        phase1a_roles = {ProviderRole.IDENTITY.value, ProviderRole.REFERENCE.value}
+        phase1b_roles = {ProviderRole.OFFICIAL_SOURCE.value}
+        phase2_roles = {ProviderRole.WEB_DISCOVERY.value, ProviderRole.NEWS.value, ProviderRole.DEEP_ARCHIVE.value, ProviderRole.SECONDARY_WEB_SEARCH.value}
+        
+        phase1a_providers = []
+        phase1b_providers = []
+        phase2_providers = []
         for provider in orchestrator.providers:
             role = orchestrator._get_provider_role(provider)
-            if role in (ProviderRole.IDENTITY.value, ProviderRole.REFERENCE.value, ProviderRole.OFFICIAL_SOURCE.value):
-                identity_providers.append(provider)
+            if role in phase1a_roles:
+                phase1a_providers.append(provider)
+            elif role in phase1b_roles:
+                phase1b_providers.append(provider)
             else:
-                other_providers.append(provider)
+                phase2_providers.append(provider)
         
-        # Wikidata and Wikipedia should be in identity phase
-        assert any(p.__class__.__name__ == "WikidataProvider" for p in identity_providers)
-        assert any(p.__class__.__name__ == "WikipediaProvider" for p in identity_providers)
-        # DirectSiteCrawler should also be in identity phase (OFFICIAL_SOURCE)
-        assert any(p.__class__.__name__ == "DirectSiteCrawler" for p in identity_providers)
-        # WebSearch should be in other phase
-        assert any(p.__class__.__name__ == "WebSearchProvider" for p in other_providers)
+        # Wikidata and Wikipedia should be in Phase 1a
+        assert any(p.__class__.__name__ == "WikidataProvider" for p in phase1a_providers)
+        assert any(p.__class__.__name__ == "WikipediaProvider" for p in phase1a_providers)
+        # DirectSiteCrawler should be in Phase 1b (NOT Phase 1a)
+        assert any(p.__class__.__name__ == "DirectSiteCrawler" for p in phase1b_providers)
+        assert not any(p.__class__.__name__ == "DirectSiteCrawler" for p in phase1a_providers)
+        # WebSearch should be in Phase 2
+        assert any(p.__class__.__name__ == "WebSearchProvider" for p in phase2_providers)
+    
+    @pytest.mark.asyncio
+    async def test_direct_site_crawler_receives_official_website(self):
+        """Test that DirectSiteCrawler receives official_website from Wikidata in context."""
+        from app.services.research.search_provider import ProviderRole, SearchResult
+        from app.services.research.wikipedia_provider import WikipediaProvider
+        from app.services.research.wikidata_provider import WikidataProvider
+        from app.services.research.direct_site_crawler import DirectSiteCrawler
+        from unittest.mock import AsyncMock, MagicMock, patch
+        
+        # Create mock providers
+        mock_wikidata = MagicMock(spec=WikidataProvider)
+        mock_wikidata.role = ProviderRole.IDENTITY
+        mock_wikidata.__class__.__name__ = "WikidataProvider"
+        mock_wikidata.search = AsyncMock(return_value=[
+            {
+                "title": "Test Entity",
+                "url": "https://wikidata.org/wiki/Q123",
+                "snippet": "Test description",
+                "metadata": {"official_website": "https://example.com/official"}
+            }
+        ])
+        
+        mock_direct_crawler = MagicMock(spec=DirectSiteCrawler)
+        mock_direct_crawler.role = ProviderRole.OFFICIAL_SOURCE
+        mock_direct_crawler.__class__.__name__ = "DirectSiteCrawler"
+        mock_direct_crawler.search = AsyncMock(return_value=[])
+        
+        # Create orchestrator
+        orchestrator = SearchOrchestrator(
+            providers=[mock_wikidata, mock_direct_crawler],
+            min_evidence=2,
+            max_concurrent_providers=2,
+        )
+        
+        # Run search
+        result = await orchestrator.search("Test Entity", context={})
+        
+        # Verify that DirectSiteCrawler was called with context containing official_website
+        assert mock_direct_crawler.search.called
+        call_args = mock_direct_crawler.search.call_args
+        assert call_args is not None
+        context_arg = call_args.kwargs.get("context", {})
+        assert "official_website" in context_arg
+        assert context_arg["official_website"] == "https://example.com/official"
 
 
 # =============================================================================
@@ -587,7 +643,89 @@ class TestCommonCrawlIndexDiscovery:
 
 
 # =============================================================================
-# Test 11: Provider Failure Isolation
+# Test 11: Prevent Rejected Candidate Metadata Contamination
+# =============================================================================
+
+class TestRejectedCandidateMetadataContamination:
+    """Test that Wikidata provider doesn't propagate rejected candidate metadata."""
+    
+    @pytest.mark.asyncio
+    async def test_wikidata_does_not_propagate_rejected_metadata(self):
+        """Test that when semantic validation rejects a candidate, its metadata is not returned."""
+        from app.services.research.wikidata_provider import WikidataProvider
+        from unittest.mock import AsyncMock, patch, MagicMock
+        
+        # Create a Wikidata provider
+        provider = WikidataProvider()
+        
+        # Mock _find_entity_by_label to return Q1761087 (Zera insect genus)
+        with patch.object(provider, '_find_entity_by_label', AsyncMock(return_value="Q1761087")):
+            # Mock _semantic_match to reject Q1761087
+            with patch.object(provider, '_semantic_match', AsyncMock(return_value=False)):
+                # Mock _get_entity_info to return entity data with official_website
+                mock_entity_data = {
+                    "id": "Q1761087",
+                    "labels": {"en": {"value": "Zera"}},
+                    "descriptions": {"en": {"value": "genus of insects"}},
+                    "claims": {
+                        "P856": [{"mainsnak": {"datavalue": {"value": "https://insects.example.com/zera"}}}]
+                    }
+                }
+                with patch.object(provider, '_get_entity_info', AsyncMock(return_value=mock_entity_data)):
+                    # Search for ZERA (Zimbabwe Energy Regulatory Authority)
+                    results = await provider.search(
+                        "Zimbabwe Energy Regulatory Authority (ZERA)",
+                        max_results=10,
+                        context={"entity_type": "government agency", "country": "Zimbabwe"}
+                    )
+                    
+                    # Q1761087 should be rejected by semantic validation
+                    # Therefore no results should contain its metadata (including official_website)
+                    for result in results:
+                        if isinstance(result, dict):
+                            assert result.get("entity_id") != "Q1761087"
+                            metadata = result.get("metadata", {})
+                            if isinstance(metadata, dict):
+                                # The rejected candidate's official_website should not appear
+                                assert "insects.example.com" not in metadata.get("official_website", "")
+    
+    @pytest.mark.asyncio
+    async def test_wikidata_sparql_results_validated(self):
+        """Test that SPARQL results also go through semantic validation."""
+        from app.services.research.wikidata_provider import WikidataProvider
+        from unittest.mock import AsyncMock, patch, MagicMock
+        
+        provider = WikidataProvider()
+        
+        # Mock _find_entity_by_label to return None (no direct match)
+        with patch.object(provider, '_find_entity_by_label', AsyncMock(return_value=None)):
+            # Mock _sparql_search to return Q1761087
+            mock_sparql_result = {
+                "title": "Zera",
+                "url": "https://www.wikidata.org/wiki/Q1761087",
+                "snippet": "genus of insects",
+                "source": "wikidata",
+                "entity_id": "Q1761087",
+                "metadata": {"official_website": "https://insects.example.com/zera"}
+            }
+            with patch.object(provider, '_sparql_search', AsyncMock(return_value=[mock_sparql_result])):
+                # Mock _semantic_match to reject Q1761087
+                with patch.object(provider, '_semantic_match', AsyncMock(return_value=False)):
+                    results = await provider.search(
+                        "Zimbabwe Energy Regulatory Authority (ZERA)",
+                        max_results=10,
+                        context={"entity_type": "government agency", "country": "Zimbabwe"}
+                    )
+                    
+                    # Q1761087 should be filtered out by semantic validation
+                    # No results should contain the rejected entity
+                    for result in results:
+                        if isinstance(result, dict):
+                            assert result.get("entity_id") != "Q1761087"
+
+
+# =============================================================================
+# Test 12: Provider Failure Isolation
 # =============================================================================
 
 class TestProviderFailureIsolation:

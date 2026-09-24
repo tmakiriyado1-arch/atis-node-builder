@@ -214,8 +214,10 @@ class SearchOrchestrator:
         logger.info(f"[ORCHESTRATOR] Generated {len(query_variations)} query variations")
         
         # Phase 1: Collect first-page results from all providers
-        # Split into two sub-phases: identity/metadata providers first, then others
-        # This ensures DirectSiteCrawler can see Wikidata's official_website in context
+        # Split into phases for proper sequencing:
+        # Phase 1a: IDENTITY and REFERENCE providers (Wikidata, Wikipedia) - discover metadata like official_website
+        # Phase 1b: OFFICIAL_SOURCE providers (DirectSiteCrawler) - can use official_website from Phase 1a
+        # Phase 2: All other providers (web search, news, archives)
         all_search_results: List[SearchResult] = []
         provider_results: List[ProviderResult] = []
         providers_attempted: List[str] = []
@@ -223,21 +225,27 @@ class SearchOrchestrator:
         providers_failed: List[str] = []
         total_queries = 0
         
-        # Separate identity/metadata providers from others
-        identity_providers = []
-        other_providers = []
+        # Separate providers by phase
+        phase1a_providers = []  # IDENTITY and REFERENCE - discover metadata
+        phase1b_providers = []  # OFFICIAL_SOURCE - use metadata from Phase 1a
+        phase2_providers = []   # All others
+        
         for provider in self.providers:
             role = self._get_provider_role(provider)
-            if role in (ProviderRole.IDENTITY.value, ProviderRole.REFERENCE.value, ProviderRole.OFFICIAL_SOURCE.value):
-                identity_providers.append(provider)
+            if role == ProviderRole.IDENTITY.value:
+                phase1a_providers.append(provider)
+            elif role == ProviderRole.REFERENCE.value:
+                phase1a_providers.append(provider)
+            elif role == ProviderRole.OFFICIAL_SOURCE.value:
+                phase1b_providers.append(provider)
             else:
-                other_providers.append(provider)
+                phase2_providers.append(provider)
         
-        logger.info(f"[ORCHESTRATOR] Phase 1a: Running {len(identity_providers)} identity/metadata providers first")
+        logger.info(f"[ORCHESTRATOR] Phase 1a: Running {len(phase1a_providers)} identity/reference providers")
         
-        # Phase 1a: Run identity/metadata providers to discover official sources
-        for i in range(0, len(identity_providers), self.max_concurrent_providers):
-            batch = identity_providers[i:i + self.max_concurrent_providers]
+        # Phase 1a: Run IDENTITY and REFERENCE providers to discover metadata like official_website
+        for i in range(0, len(phase1a_providers), self.max_concurrent_providers):
+            batch = phase1a_providers[i:i + self.max_concurrent_providers]
             batch_results = await asyncio.gather(
                 *[self._run_provider(p, query, context, max_results) for p in batch],
                 return_exceptions=True
@@ -283,11 +291,11 @@ class SearchOrchestrator:
                         query=query,
                     ))
         
-        logger.info(f"[ORCHESTRATOR] Phase 1b: Running {len(other_providers)} remaining providers with updated context")
+        logger.info(f"[ORCHESTRATOR] Phase 1b: Running {len(phase1b_providers)} official source providers with updated context")
         
-        # Phase 1b: Run other providers (including DirectSiteCrawler) with potentially updated context
-        for i in range(0, len(other_providers), self.max_concurrent_providers):
-            batch = other_providers[i:i + self.max_concurrent_providers]
+        # Phase 1b: Run OFFICIAL_SOURCE providers (DirectSiteCrawler) with context from Phase 1a
+        for i in range(0, len(phase1b_providers), self.max_concurrent_providers):
+            batch = phase1b_providers[i:i + self.max_concurrent_providers]
             batch_results = await asyncio.gather(
                 *[self._run_provider(p, query, context, max_results) for p in batch],
                 return_exceptions=True
@@ -321,7 +329,45 @@ class SearchOrchestrator:
                     ))
                     logger.warning(f"[ORCHESTRATOR] Provider {provider_name} raised exception: {result}")
         
-        # Phase 2: Normalize, deduplicate, and merge search results with provenance
+        # Phase 2: Run remaining providers (web search, news, archives)
+        logger.info(f"[ORCHESTRATOR] Phase 2: Running {len(phase2_providers)} remaining providers")
+        
+        for i in range(0, len(phase2_providers), self.max_concurrent_providers):
+            batch = phase2_providers[i:i + self.max_concurrent_providers]
+            batch_results = await asyncio.gather(
+                *[self._run_provider(p, query, context, max_results) for p in batch],
+                return_exceptions=True
+            )
+            
+            for provider, result in zip(batch, batch_results):
+                provider_name = self._get_provider_name(provider)
+                provider_role = self._get_provider_role(provider)
+                providers_attempted.append(provider_name)
+                total_queries += 1
+                
+                if isinstance(result, ProviderResult):
+                    provider_results.append(result)
+                    if result.status == ProviderStatus.SUCCESS:
+                        providers_succeeded.append(provider_name)
+                        all_search_results.extend(result.raw_results)
+                        
+                        logger.info(f"[ORCHESTRATOR] Provider {provider_name} returned {len(result.raw_results)} results")
+                    else:
+                        providers_failed.append(provider_name)
+                        logger.warning(f"[ORCHESTRATOR] Provider {provider_name} failed: {result.error}")
+                else:
+                    # Exception occurred
+                    providers_failed.append(provider_name)
+                    provider_results.append(ProviderResult(
+                        provider_name=provider_name,
+                        role=provider_role,
+                        status=ProviderStatus.FAILED,
+                        error=str(result),
+                        query=query,
+                    ))
+                    logger.warning(f"[ORCHESTRATOR] Provider {provider_name} raised exception: {result}")
+        
+        # Phase 3: Normalize, deduplicate, and merge search results with provenance
         merged_results = self._merge_and_deduplicate_results(all_search_results)
         
         search_results_total = len(all_search_results)
@@ -356,13 +402,7 @@ class SearchOrchestrator:
         urls_crawl_succeeded = len([r for r in crawl_results if r.success])
         urls_crawl_failed = len(crawl_failures)
         
-        # Count evidence by quality
-        substantive_count = sum(1 for e in all_evidence if e.evidence_status.value in ("usable",) or e.extraction_quality.value in ("substantive",))
-        thin_count = sum(1 for e in all_evidence if e.evidence_status.value == "thin" or e.extraction_quality.value == "thin")
-        unusable_count = sum(1 for e in all_evidence if e.evidence_status.value == "unusable")
-        
         logger.info(f"[ORCHESTRATOR] Crawled {urls_crawl_succeeded}/{urls_crawl_attempted} URLs")
-        logger.info(f"[ORCHESTRATOR] Evidence quality: Substantive={substantive_count}, Thin={thin_count}, Unusable={unusable_count}")
         
         # Phase 4: Convert crawl results to evidence records
         all_evidence: List[EvidenceRecord] = []
