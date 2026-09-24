@@ -15,8 +15,9 @@ from typing import Any, ClassVar, Dict, List, Optional, Sequence, Set, Tuple
 from urllib.parse import urlparse
 
 from app.services.research.evidence import EvidenceRecord, EvidenceStatus, ExtractionQuality, deduplicate_evidence, normalize_search_result, normalize_url
+from app.services.research.llm_ranking import LLMRanker, RankedResult, RankingResult
 from app.services.research.page_crawler import CrawlResult, CrawlStats, PageCrawler
-from app.services.research.query_variation import QueryVariationGenerator, QueryVariationConfig
+from app.services.research.query_variation import QueryVariation, QueryVariationGenerator, QueryVariationConfig
 from app.services.research.search_provider import ProviderRole, SearchProvider, SearchResult
 from app.logging import logger
 
@@ -125,6 +126,8 @@ class SearchOrchestrator:
         max_concurrent_crawls: int = 5,
         page_crawler: Optional[PageCrawler] = None,
         query_variation_config: Optional[QueryVariationConfig] = None,
+        use_llm_ranking: bool = True,
+        llm_ranker: Optional[LLMRanker] = None,
     ):
         """Initialize orchestrator with a list of providers.
         
@@ -138,6 +141,8 @@ class SearchOrchestrator:
             max_concurrent_crawls: Max URLs to crawl concurrently
             page_crawler: Optional custom PageCrawler instance
             query_variation_config: Optional configuration for query variation generation
+            use_llm_ranking: Whether to use LLM for ranking search results
+            llm_ranker: Optional custom LLMRanker instance
         """
         self.providers = list(providers) if providers else []
         self.min_evidence = min_evidence
@@ -157,6 +162,9 @@ class SearchOrchestrator:
                 max_variations=self.MAX_QUERY_VARIATIONS,
             )
         )
+        self.use_llm_ranking = use_llm_ranking
+        self.llm_ranker = llm_ranker or LLMRanker() if use_llm_ranking else None
+        self._llm_ranking_result: Optional[RankingResult] = None
 
     def add_provider(self, provider: SearchProvider) -> None:
         """Add a search provider to the orchestrator."""
@@ -425,6 +433,35 @@ class SearchOrchestrator:
         
         # Phase 5: Deduplicate evidence by URL
         final_evidence = deduplicate_evidence(all_evidence)
+        
+        # Phase 5b: LLM-based ranking of evidence (if enabled)
+        # Extract query variations as strings for ranking
+        query_variation_strings = [qv.query for qv in query_variations] if query_variations else [query]
+        
+        if self.use_llm_ranking and self.llm_ranker and final_evidence:
+            logger.info(f"[ORCHESTRATOR] Ranking {len(final_evidence)} evidence items with LLM")
+            try:
+                ranking_result = await self.llm_ranker.rank_results(
+                    query,
+                    final_evidence,
+                    query_variation_strings,
+                    context,
+                )
+                self._llm_ranking_result = ranking_result
+                
+                # Select top results based on LLM ranking
+                top_evidence = await self.llm_ranker.select_top_results(
+                    ranking_result,
+                    query,
+                    max_results=self.TARGET_UNIQUE_URLS,
+                )
+                
+                # Use LLM-selected evidence as final evidence
+                final_evidence = top_evidence
+                logger.info(f"[ORCHESTRATOR] LLM selected {len(final_evidence)} top evidence items from {len(ranking_result.ranked_results)} ranked")
+            except Exception as e:
+                logger.warning(f"[ORCHESTRATOR] LLM ranking failed: {e}, using all evidence")
+                self._llm_ranking_result = None
         
         # Phase 6: Determine status based on evidence quality
         status = self._determine_status(final_evidence, providers_attempted, providers_succeeded)

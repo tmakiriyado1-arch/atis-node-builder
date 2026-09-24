@@ -238,6 +238,51 @@ class TestWikidataSemanticValidation:
             if isinstance(result, dict):
                 entity_id = result.get("entity_id", "")
                 assert entity_id != "Q1761087", f"ZERA acronym incorrectly matched to Q1761087"
+    
+    @pytest.mark.asyncio
+    async def test_sapp_does_not_match_surname(self):
+        """Test that SAPP does not resolve to Q16882653 (Sapp surname)."""
+        provider = WikidataProvider()
+        
+        # This should NOT return Q16882653 for Southern African Power Pool
+        results = await provider.search(
+            "Southern African Power Pool (SAPP)",
+            max_results=10,
+            context={"entity_type": "organization", "country": "Southern Africa"}
+        )
+        
+        # Check that no result has entity_id Q16882653
+        for result in results:
+            # Handle both dict and SearchResult objects
+            if hasattr(result, 'metadata'):
+                metadata = result.metadata
+                entity_id = metadata.get("entity_id", "") if isinstance(metadata, dict) else ""
+                assert entity_id != "Q16882653", f"SAPP metadata incorrectly contains Q16882653"
+            elif isinstance(result, dict):
+                entity_id = result.get("entity_id", "")
+                assert entity_id != "Q16882653", f"SAPP incorrectly matched to Q16882653 (Sapp surname)"
+                metadata = result.get("metadata", {})
+                if isinstance(metadata, dict):
+                    entity_id = metadata.get("entity_id", "")
+                    assert entity_id != "Q16882653", f"SAPP metadata incorrectly contains Q16882653"
+    
+    @pytest.mark.asyncio
+    async def test_sapp_acronym_does_not_match_surname(self):
+        """Test that SAPP acronym does not resolve to Q16882653."""
+        provider = WikidataProvider()
+        
+        # Even with just "SAPP", it should not match Q16882653 if context indicates organization
+        results = await provider.search(
+            "SAPP",
+            max_results=10,
+            context={"entity_type": "organization", "country": "Southern Africa"}
+        )
+        
+        # Check that no result has entity_id Q16882653
+        for result in results:
+            if isinstance(result, dict):
+                entity_id = result.get("entity_id", "")
+                assert entity_id != "Q16882653", f"SAPP acronym incorrectly matched to Q16882653"
 
 
 # =============================================================================

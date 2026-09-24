@@ -382,6 +382,21 @@ class WikidataProvider(SearchProvider):
                 logger.error(f"[WIKIDATA] Rejecting Q1761087 (Zera insect genus) for query '{original_query}' - semantic mismatch")
                 return False
         
+        # SAPP should NOT match Q16882653 (Sapp surname) when query is Southern African Power Pool
+        if entity_id == "Q16882653" and ("sapp" in original_lower or "southern african power pool" in original_lower):
+            # Check if the original query indicates Southern African Power Pool organization
+            sapp_patterns = [
+                "southern african power pool",
+                "sapp",
+                "power pool",
+                "electricity",
+                "energy",
+                "sadc",
+            ]
+            if any(pattern in original_lower for pattern in sapp_patterns):
+                logger.error(f"[WIKIDATA] Rejecting Q16882653 (Sapp surname) for query '{original_query}' - semantic mismatch")
+                return False
+        
         # Extract expected entity type from context
         expected_entity_type = None
         expected_country = None
