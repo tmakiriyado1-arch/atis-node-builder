@@ -7,23 +7,16 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Any, Iterable, List, Optional, Sequence
+from typing import Any, Dict, FrozenSet, Iterable, List, Optional, Sequence
 
 from app.services.entity_resolution.registry import EntityRegistry, ResolutionState
 from app.services.entity_resolution.resolver import EntityResolver
+from app.services.ontology import (
+    ClaimCategory,
+    MetadataField,
+    get_ontology,
+)
 from app.services.research_engine import ResearchClaim
-
-
-class ClaimCategory(str, Enum):
-    """Deterministic routing categories for a research claim."""
-
-    SUMMARY = "SUMMARY"
-    RELATIONSHIP = "RELATIONSHIP"
-    ASSOCIATION = "ASSOCIATION"
-    METADATA = "METADATA"
-    SOURCE = "SOURCE"
-    UNCLASSIFIED = "UNCLASSIFIED"
 
 
 @dataclass
@@ -63,215 +56,45 @@ class ClaimClassifier:
     
     This classifier is designed to handle ANY claim text and extract meaningful information
     including metadata, relationships, associations, and summaries.
+    
+    It consumes the canonical ontology from app.services.ontology for all classification
+    paths, metadata fields, entity types, and predicate vocabularies.
     """
-
-    _relationship_predicates = {
-        "regulates",
-        "manages",
-        "oversees",
-        "supports",
-        "operates",
-        "provides",
-        "governs",
-        "controls",
-        "establishes",
-        "requires",
-        "enforces",
-        "includes",
-        "covers",
-        "monitors",
-        "administers",
-        "coordinates",
-        "maintains",
-        "owns",
-        "leads",
-        "founded",
-        "created",
-        "funds",
-        "licenses",
-        "authorizes",
-        "approved",
-        "signed",
-        "built",
-        "develops",
-        "implements",
-        "executes",
-        "advises",
-        "consults",
-        "represents",
-        "participates",
-        "collaborates",
-        "partners",
-    }
-
-    _association_predicates = {
-        "connected_to",
-        "relevant_to",
-        "related_to",
-        "associated_with",
-        "linked_to",
-        "relevant to",
-        "connected to",
-        "associated with",
-        "affiliated_with",
-        "partnered_with",
-        "collaborates_with",
-        "works_with",
-        "member_of",
-        "part_of",
-    }
-
-    # Expanded metadata keywords for comprehensive coverage
-    _metadata_keywords = {
-        "entity_type": [
-            # Organization types
-            "government agency",
-            "government body",
-            "public authority",
-            "state-owned enterprise",
-            "private company",
-            "non-profit",
-            "organization",
-            "authority",
-            "agency",
-            "company",
-            "institution",
-            "ministry",
-            "department",
-            "utility",
-            "station",
-            "plant",
-            "firm",
-            "corporation",
-            "enterprise",
-            "consortium",
-            "alliance",
-            "pool",
-            "cooperation",
-            "cooperative",
-            "network",
-            "association",
-            "council",
-            "committee",
-            "board",
-            "commission",
-            "foundation",
-            "institute",
-            "center",
-            "bureau",
-            "office",
-            "service",
-            "program",
-            "initiative",
-            "project",
-            "task force",
-            "working group",
-            # Concept types
-            "concept",
-            "economic policy approach",
-            "policy approach",
-            "ideological framework",
-            "economic framework",
-            "political concept",
-            "strategy",
-            "approach",
-            "methodology",
-            "framework",
-            "doctrine",
-            "principle",
-            "theory",
-        ],
-        "country": [
-            "located in",
-            "based in",
-            "situated in",
-            "operates in",
-            "headquartered in",
-            "registered in",
-            "incorporated in",
-            "in africa",
-            "in zimbabwe",
-            "in south africa",
-            "in mozambique",
-            "in kenya",
-            "in nigeria",
-            "in ghana",
-            "in uganda",
-            "in tanzania",
-            "in zambia",
-            "in malawi",
-            "in botswana",
-            "in namibia",
-            "in angola",
-            "southern africa",
-            "eastern africa",
-            "western africa",
-            "north africa",
-            "sadc",
-            "southern african development community",
-        ],
-        "sector": [
-            "energy sector",
-            "power sector",
-            "electricity sector",
-            "water sector",
-            "transport sector",
-            "telecommunications sector",
-            "mining sector",
-            "agriculture sector",
-            "technology sector",
-            "financial sector",
-            "health sector",
-            "education sector",
-            "infrastructure",
-            "energy",
-            "power",
-            "electricity",
-            "renewable energy",
-            "sustainable energy",
-        ],
-        "status": [
-            "active",
-            "inactive",
-            "proposed",
-            "approved",
-            "operational",
-            "closed",
-            "pending",
-            "draft",
-            "published",
-            "implemented",
-            "established",
-            "founded",
-            "launched",
-            "running",
-            "functional",
-        ],
-    }
-
-    _concept_entity_type_keywords = {
-        "concept": [
-            "concept",
-            "economic policy approach",
-            "policy approach",
-            "ideological framework",
-            "economic framework",
-            "political concept",
-        ],
-    }
-
-    _concept_subtype_mapping = {
-        "economic policy approach": "economic_policy",
-        "policy approach": "policy",
-        "ideological framework": "ideological_framework",
-        "economic framework": "economic_framework",
-        "political concept": "political_concept",
-        "concept": None,
-    }
 
     def __init__(self, registry: Optional[EntityRegistry] = None, resolver: Optional[EntityResolver] = None):
         self.registry = registry
         self.resolver = resolver
+        self.ontology = get_ontology()
+
+    @property
+    def _relationship_predicates(self) -> FrozenSet[str]:
+        """Get relationship predicates from ontology."""
+        return self.ontology.relationship_predicates
+
+    @property
+    def _association_predicates(self) -> FrozenSet[str]:
+        """Get association predicates from ontology."""
+        return self.ontology.association_predicates
+
+    @property
+    def _metadata_keywords(self) -> Dict[str, List[str]]:
+        """Get metadata keywords from ontology, organized by field."""
+        return {
+            "entity_type": list(self.ontology.organization_types | self.ontology.concept_types | self.ontology.document_types),
+            "country": list(self.ontology.country_keywords),
+            "sector": list(self.ontology.sector_keywords),
+            "status": list(self.ontology.status_keywords),
+        }
+
+    @property
+    def _concept_entity_type_keywords(self) -> Dict[str, List[str]]:
+        """Get concept entity type keywords from ontology."""
+        return {"concept": list(self.ontology.concept_types)}
+
+    @property
+    def _concept_subtype_mapping(self) -> Dict[str, Optional[str]]:
+        """Get concept subtype mapping from ontology."""
+        return self.ontology.concept_subtype_mapping
 
     def classify(self, claim: ResearchClaim) -> ClaimClassification:
         if claim is None:
@@ -284,62 +107,26 @@ class ClaimClassifier:
         evidence_urls = self._evidence_urls(claim)
         subject, predicate, target = self._extract_triplet(claim, text)
         
-        # First, try to extract metadata from the claim
-        metadata_field = self._metadata_field(text, target, predicate)
-        if metadata_field:
-            subtype = self._extract_subtype(text, target) if metadata_field == "entity_type" else None
-            return ClaimClassification(
-                category=ClaimCategory.METADATA,
-                target=target,
-                predicate=predicate or "is",
-                metadata_field=metadata_field,
-                evidence_urls=evidence_urls,
-                reasoning="metadata claim routed to canonical field",
-                raw_claim=text,
-                subtype=subtype,
-            )
-
-        # Try to extract entity type from "is a/an [type]" pattern
+        # First check for explicit "is a/an [type]" entity type metadata
         if predicate and predicate.lower() in {"is", "is_a", "is_an"}:
             entity_type = self._extract_entity_type_from_target(target, text)
             if entity_type:
+                # Preserve the original target which includes "a" or "an"
+                original_target = target if target else text.replace(predicate, "").strip()
+                # Extract subtype for concept entities
+                subtype = self._extract_subtype(text, original_target)
                 return ClaimClassification(
                     category=ClaimCategory.METADATA,
-                    target=entity_type,
+                    target=original_target,
                     predicate="is",
                     metadata_field="entity_type",
                     evidence_urls=evidence_urls,
                     reasoning="entity type extracted from 'is a/an' pattern",
                     raw_claim=text,
+                    subtype=subtype,
                 )
 
-        # Enhanced: Try to extract location information first
-        location = self._extract_location(text)
-        if location:
-            return ClaimClassification(
-                category=ClaimCategory.METADATA,
-                target=location,
-                predicate="located_in",
-                metadata_field="country",
-                evidence_urls=evidence_urls,
-                reasoning="location extracted from claim text",
-                raw_claim=text,
-            )
-
-        # Enhanced: Try to extract sector information
-        sector = self._extract_sector(text)
-        if sector:
-            return ClaimClassification(
-                category=ClaimCategory.METADATA,
-                target=sector,
-                predicate="operates_in",
-                metadata_field="sector",
-                evidence_urls=evidence_urls,
-                reasoning="sector extracted from claim text",
-                raw_claim=text,
-            )
-
-        # Check for direct relationships
+        # Check for direct relationships (before general metadata extraction)
         if self._is_direct_relationship(text, predicate, target):
             route_target = self._canonical_target(subject, target)
             return ClaimClassification(
@@ -365,8 +152,8 @@ class ClaimClassifier:
                 raw_claim=text,
             )
 
-        # Check for association claims
-        if self._is_association_claim(text):
+        # Check for association claims - but skip if it's ambiguous
+        if self._is_association_claim(text) and not self._is_ambiguous_claim(text):
             route_target = self._canonical_target(subject, target)
             return ClaimClassification(
                 category=ClaimCategory.ASSOCIATION,
@@ -375,6 +162,69 @@ class ClaimClassifier:
                 evidence_urls=evidence_urls,
                 reasoning="explicit contextual association",
                 resolved_target=self._resolve_target(subject, route_target or target),
+                raw_claim=text,
+            )
+        
+        # If it's an association claim but ambiguous, fall through to UNCLASSIFIED
+        if self._is_ambiguous_claim(text):
+            return ClaimClassification(
+                category=ClaimCategory.UNCLASSIFIED,
+                target=target,
+                predicate=predicate,
+                evidence_urls=evidence_urls,
+                reasoning="ambiguous claim - contains unclear terms",
+                raw_claim=text,
+            )
+
+        # Now try to extract metadata from the claim (for explicit metadata statements)
+        metadata_field = self._metadata_field(text, target, predicate)
+        if metadata_field:
+            subtype = self._extract_subtype(text, target) if metadata_field == "entity_type" else None
+            return ClaimClassification(
+                category=ClaimCategory.METADATA,
+                target=target,
+                predicate=predicate or "is",
+                metadata_field=metadata_field,
+                evidence_urls=evidence_urls,
+                reasoning="metadata claim routed to canonical field",
+                raw_claim=text,
+                subtype=subtype,
+            )
+
+        # Enhanced: Try to extract location information
+        location = self._extract_location(text)
+        if location:
+            return ClaimClassification(
+                category=ClaimCategory.METADATA,
+                target=location,
+                predicate="located_in",
+                metadata_field="country",
+                evidence_urls=evidence_urls,
+                reasoning="location extracted from claim text",
+                raw_claim=text,
+            )
+
+        # Enhanced: Try to extract sector information
+        # But only if it's not a relationship predicate (like "regulates")
+        sector = self._extract_sector(text)
+        if sector and not predicate:
+            return ClaimClassification(
+                category=ClaimCategory.METADATA,
+                target=sector,
+                predicate="operates_in",
+                metadata_field="sector",
+                evidence_urls=evidence_urls,
+                reasoning="sector extracted from claim text",
+                raw_claim=text,
+            )
+        elif sector and predicate and predicate.lower() not in self._relationship_predicates:
+            return ClaimClassification(
+                category=ClaimCategory.METADATA,
+                target=sector,
+                predicate="operates_in",
+                metadata_field="sector",
+                evidence_urls=evidence_urls,
+                reasoning="sector extracted from claim text",
                 raw_claim=text,
             )
 
@@ -512,36 +362,40 @@ class ClaimClassifier:
         if match:
             return self._clean(match.group("subject")), self._clean(match.group("predicate")).lower(), self._clean(match.group("object"))
         
-        # Try relationship predicates
+        # Try relationship predicates - build from ontology
+        relationship_pattern = "|".join(self._relationship_predicates)
         match = re.search(
-            r"^(?P<subject>.+?)\s+(?P<predicate>regulates|manages|oversees|supports|operates|provides|governs|controls|establishes|requires|enforces|includes|covers|monitors|administers|coordinates|maintains|owns|leads|founded|created|funds|licenses|authorizes|approved|signed|built|develops|implements|executes|advises|consults|represents|participates|collaborates|partners|created|has)\s+(?P<object>.+)$",
+            rf"^(?P<subject>.+?)\s+(?P<predicate>{relationship_pattern}|created|has)\s+(?P<object>.+)$",
             text,
             flags=re.IGNORECASE,
         )
         if match:
             return self._clean(match.group("subject")), self._clean(match.group("predicate")).lower(), self._clean(match.group("object"))
         
-        # Try association predicates
+        # Try association predicates - build from ontology
+        association_pattern = "|".join(self._association_predicates)
         match = re.search(
-            r"^(?P<subject>.+?)\s+(?P<predicate>connected to|relevant to|related to|associated with|linked to|affiliated with|partnered with|collaborates with|works with|member of|part of)\s+(?P<object>.+)$",
+            rf"^(?P<subject>.+?)\s+(?P<predicate>{association_pattern})\s+(?P<object>.+)$",
             text,
             flags=re.IGNORECASE,
         )
         if match:
             return self._clean(match.group("subject")), self._clean(match.group("predicate")).lower(), self._clean(match.group("object"))
         
-        # Try location patterns
+        # Try location patterns - build from ontology
+        location_pattern = "|".join(self.ontology.country_keywords)
         match = re.search(
-            r"^(?P<subject>.+?)\s+(?P<predicate>located in|based in|situated in|operates in|headquartered in|registered in|incorporated in)\s+(?P<object>.+)$",
+            rf"^(?P<subject>.+?)\s+(?P<predicate>{location_pattern})\s+(?P<object>.+)$",
             text,
             flags=re.IGNORECASE,
         )
         if match:
             return self._clean(match.group("subject")), self._clean(match.group("predicate")).lower(), self._clean(match.group("object"))
         
-        # Try sector patterns
+        # Try sector patterns - build from ontology
+        sector_pattern = "|".join(self.ontology.sector_keywords)
         match = re.search(
-            r"^(?P<subject>.+?)\s+(?P<predicate>operates in|in the|works in|active in|focused on)\s+(?P<object>\w+ sector|\w+ industry|energy|power|electricity|infrastructure)\s*",
+            rf"^(?P<subject>.+?)\s+(?P<predicate>operates in|in the|works in|active in|focused on)\s+(?P<object>{sector_pattern}|\w+ sector|\w+ industry|energy|power|electricity|infrastructure)\s*",
             text,
             flags=re.IGNORECASE,
         )
@@ -565,11 +419,11 @@ class ClaimClassifier:
                 return True
             if any(keyword in lower for keyword in self._concept_entity_type_keywords["concept"]):
                 return True
-        if any(keyword in lower for keyword in ["located in", "based in", "situated in", "operates in", "headquartered in"]):
+        if any(keyword in lower for keyword in self._metadata_keywords["country"]):
             return True
-        if any(keyword in lower for keyword in ["operates in", "in the energy sector", "energy sector", "power sector", "electricity sector", "water sector", "transport sector", "technology sector"]):
+        if any(keyword in lower for keyword in self._metadata_keywords["sector"]):
             return True
-        if re.search(r"\b(active|inactive|proposed|approved|operational|closed|pending|draft|published|implemented|established|founded|launched)\b", lower):
+        if re.search(r"\b(active|inactive|proposed|approved|operational|closed|pending|draft|published|implemented|established|founded|launched|running|functional)\b", lower):
             return True
         return False
 
@@ -582,9 +436,9 @@ class ClaimClassifier:
                 return "entity_type"
             if any(keyword in lower for keyword in self._concept_entity_type_keywords["concept"]):
                 return "entity_type"
-        if any(keyword in lower for keyword in ["located in", "based in", "situated in", "headquartered in", "registered in", "incorporated in"]):
+        if any(keyword in lower for keyword in self._metadata_keywords["country"]):
             return "country"
-        if any(keyword in lower for keyword in ["operates in", "in the energy sector", "energy sector", "power sector", "electricity sector", "water sector", "transport sector", "technology sector", "infrastructure"]):
+        if any(keyword in lower for keyword in self._metadata_keywords["sector"]):
             return "sector"
         if re.search(r"\b(active|inactive|proposed|approved|operational|closed|pending|draft|published|implemented|established|founded|launched|running|functional)\b", lower):
             return "status"
@@ -612,8 +466,16 @@ class ClaimClassifier:
         
         lower_target = target.lower()
         
-        # Check against entity_type keywords
-        for keyword in self._metadata_keywords["entity_type"]:
+        # Check for concept patterns from ontology first (longest match first)
+        # Sort by length descending to match longest phrases first
+        concept_keywords_sorted = sorted(self._concept_entity_type_keywords["concept"], key=len, reverse=True)
+        for keyword in concept_keywords_sorted:
+            if keyword.lower() in lower_target:
+                return keyword
+        
+        # Check against entity_type keywords from ontology (longest match first)
+        entity_type_keywords_sorted = sorted(self._metadata_keywords["entity_type"], key=len, reverse=True)
+        for keyword in entity_type_keywords_sorted:
             if keyword.lower() in lower_target:
                 # Return the keyword that matched
                 return keyword
@@ -626,11 +488,6 @@ class ClaimClassifier:
             match = re.search(pattern, lower_target, re.IGNORECASE)
             if match:
                 return match.group(1).capitalize()
-        
-        # Check for concept patterns
-        for keyword in self._concept_entity_type_keywords["concept"]:
-            if keyword.lower() in lower_target:
-                return keyword
         
         # If target looks like an organization name, classify it
         if any(org_keyword in lower_target for org_keyword in [
@@ -652,32 +509,25 @@ class ClaimClassifier:
         """Extract location/country information from text."""
         lower = text.lower()
         
-        # Check for country keywords
+        # Check for country keywords from ontology
         country_patterns = [
             ("southern africa", "Southern Africa"),
             ("sadc", "SADC"),
             ("southern african development community", "Southern African Development Community"),
             ("africa", "Africa"),
-            ("zimbabwe", "Zimbabwe"),
-            ("south africa", "South Africa"),
-            ("mozambique", "Mozambique"),
-            ("kenya", "Kenya"),
-            ("nigeria", "Nigeria"),
-            ("ghana", "Ghana"),
-            ("uganda", "Uganda"),
-            ("tanzania", "Tanzania"),
-            ("zambia", "Zambia"),
-            ("malawi", "Malawi"),
-            ("botswana", "Botswana"),
-            ("namibia", "Namibia"),
-            ("angola", "Angola"),
         ]
+        
+        # Add all African countries from ontology
+        for country in self.ontology.countries:
+            country_lower = country.lower()
+            if country_lower not in ["southern africa", "sadc", "southern african development community", "africa"]:
+                country_patterns.append((country_lower, country))
         
         for pattern, country_name in country_patterns:
             if pattern in lower:
                 return country_name
         
-        # Check for location prepositions
+        # Check for location prepositions from ontology
         location_patterns = [
             r"(?:located|based|situated|operates|headquartered|registered|incorporated)\s+(?:in\s+)?(?P<location>[A-Z][a-zA-Z\s-]+(?:\s+[A-Z][a-zA-Z\s-]+)*)",
         ]
@@ -717,17 +567,11 @@ class ClaimClassifier:
         """Extract sector information from text."""
         lower = text.lower()
         
-        sector_patterns = [
-            ("energy sector", "Energy Sector"),
-            ("power sector", "Power Sector"),
-            ("electricity sector", "Electricity Sector"),
-            ("infrastructure", "Infrastructure"),
-            ("energy", "Energy"),
-            ("power", "Power"),
-            ("electricity", "Electricity"),
-            ("renewable energy", "Renewable Energy"),
-            ("sustainable energy", "Sustainable Energy"),
-        ]
+        # Check for sector keywords from ontology
+        sector_patterns = []
+        for sector in self.ontology.sectors:
+            sector_lower = sector.lower()
+            sector_patterns.append((sector_lower, sector))
         
         for pattern, sector_name in sector_patterns:
             if pattern in lower:
@@ -758,7 +602,7 @@ class ClaimClassifier:
         lower = text.lower()
         
         # Look for patterns like "[subject] [verb] [object]"
-        # where verb is a relationship predicate
+        # where verb is a relationship predicate from ontology
         for predicate in sorted(self._relationship_predicates, key=len, reverse=True):
             # Pattern: subject + predicate + object
             pattern = rf"{re.escape(subject.lower())}\s+{predicate}\s+(?P<object>.+?)(?:\.|$)"
@@ -794,33 +638,7 @@ class ClaimClassifier:
 
     def _is_summary_claim(self, text: str, predicate: Optional[str], target: Optional[str]) -> bool:
         lower = text.lower()
-        summary_patterns = [
-            "is used in",
-            "used in",
-            "generates",
-            "produces",
-            "supplies",
-            "powers",
-            "operates",
-            "functions",
-            "delivers",
-            "supports",
-            "responsible for",
-            "facilitates",
-            "enables",
-            "provides",
-            "is designed to",
-            "aims to",
-            "seeks to",
-            "works to",
-            "strives to",
-            "helps",
-            "promotes",
-            "encourages",
-            "coordinates",
-            "manages",
-            "oversees",
-        ]
+        summary_patterns = list(self.ontology.summary_patterns)
         if any(pattern in lower for pattern in summary_patterns):
             return True
         if re.search(r"\b(regulates|manages|oversees)\s+(?:the\s+)?[a-z0-9\s'\-]+(?:sector|industry|market|activity|licensing|system)\b", lower):
@@ -833,10 +651,15 @@ class ClaimClassifier:
         lower = text.lower()
         if any(token in lower for token in ["something unclear", "unclear", "various", "miscellaneous"]):
             return False
-        for marker in ["relevant to", "connected to", "associated with", "related to", "linked to", "affiliated with", "partnered with", "collaborates with", "works with", "member of", "part of"]:
+        for marker in self._association_predicates:
             if marker in lower:
                 return True
         return False
+
+    def _is_ambiguous_claim(self, text: str) -> bool:
+        """Check if a claim is ambiguous and should not be classified as association."""
+        lower = text.lower()
+        return any(token in lower for token in ["something unclear", "unclear", "various", "miscellaneous"])
 
     def _is_descriptive_claim(self, text: str, subject: Optional[str]) -> bool:
         """Check if a claim is descriptive of the entity."""
@@ -848,16 +671,8 @@ class ClaimClassifier:
         
         # If the text contains the subject and describes it
         if subject_lower in lower:
-            # Check for descriptive verbs
-            descriptive_verbs = [
-                "is", "are", "was", "were", "be", "being", "been",
-                "has", "have", "had", "having",
-                "was founded", "was established", "was created",
-                "functions", "operates", "works", "provides",
-                "supports", "coordinates", "manages", "oversees",
-                "creates", "maintains", "develops", "facilitates",
-            ]
-            for verb in descriptive_verbs:
+            # Check for descriptive verbs from ontology
+            for verb in self.ontology.descriptive_verbs:
                 if verb in lower:
                     return True
         

@@ -2,13 +2,17 @@
 
 This builder ensures all fields are properly extracted and preserved,
 including entity type, subtype, country, sector, status, relationships, and associations.
+
+It consumes the canonical ontology from app.services.ontology for all
+classification paths, metadata fields, entity types, and predicate vocabularies.
 """
 from __future__ import annotations
 
 import re
-from typing import Iterable, List, Sequence
+from typing import FrozenSet, List, Optional, Sequence
 
 from app.models import CanonicalNodeRow, NodeDraft
+from app.services.ontology import get_ontology
 from app.services.research_engine import ResearchClaim
 
 
@@ -17,40 +21,34 @@ class CanonicalNodeRowBuilder:
     
     This builder extracts all available information from the node draft and claims
     to create a comprehensive canonical row.
+    
+    It consumes the canonical ontology from app.services.ontology.
     """
 
-    _relationship_patterns = [
-        "regulates",
-        "manages",
-        "oversees",
-        "supports",
-        "operates",
-        "provides",
-        "governs",
-        "controls",
-        "establishes",
-        "requires",
-        "enforces",
-        "includes",
-        "covers",
-        "monitors",
-        "administers",
-        "coordinates",
-        "maintains",
-        "owns",
-        "leads",
-        "founded",
-        "created",
-        "develops",
-        "implements",
-        "executes",
-        "advises",
-        "consults",
-        "represents",
-        "participates",
-        "collaborates",
-        "partners",
-    ]
+    def __init__(self):
+        self.ontology = get_ontology()
+
+    @property
+    def _relationship_patterns(self) -> FrozenSet[str]:
+        """Get relationship predicates from ontology."""
+        return self.ontology.relationship_predicates
+
+    @property
+    def _association_patterns(self) -> list:
+        """Get association patterns from ontology."""
+        return [
+            ("relevant_to", r"relevant to\s+(?:the\s+)?(.+?)(?:\.|$)"),
+            ("connected_to", r"connected to\s+(?:the\s+)?(.+?)(?:\.|$)"),
+            ("associated_with", r"associated with\s+(?:the\s+)?(.+?)(?:\.|$)"),
+            ("related_to", r"related to\s+(?:the\s+)?(.+?)(?:\.|$)"),
+            ("linked_to", r"linked to\s+(?:the\s+)?(.+?)(?:\.|$)"),
+            ("affiliated_with", r"affiliated with\s+(?:the\s+)?(.+?)(?:\.|$)"),
+            ("partnered_with", r"partnered with\s+(?:the\s+)?(.+?)(?:\.|$)"),
+            ("collaborates_with", r"collaborates with\s+(?:the\s+)?(.+?)(?:\.|$)"),
+            ("works_with", r"works with\s+(?:the\s+)?(.+?)(?:\.|$)"),
+            ("member_of", r"member of\s+(?:the\s+)?(.+?)(?:\.|$)"),
+            ("part_of", r"part of\s+(?:the\s+)?(.+?)(?:\.|$)"),
+        ]
 
     def build(self, node_draft: NodeDraft) -> CanonicalNodeRow:
         if node_draft is None:
@@ -180,7 +178,8 @@ class CanonicalNodeRowBuilder:
         if node_draft.title and node_draft.title.strip():
             title = node_draft.title.strip()
             entity = (frontmatter.get("entity") or title).strip()
-            if title != entity:
+            # Always add title as alias, even if it matches entity (it's a valid alias)
+            if title:
                 aliases.append(title)
         
         # Extract aliases from claims (acronyms, alternative names)
@@ -286,6 +285,14 @@ class CanonicalNodeRowBuilder:
             # Ensure it ends with a period
             if not cleaned.endswith("."):
                 cleaned = cleaned + "."
+            # Add wikilinks to targets in the summary
+            # Pattern: "regulates electricity licensing" -> "regulates [[electricity licensing]]"
+            cleaned = re.sub(
+                r"\b(regulates|manages|oversees|supports|operates|provides|governs|controls|establishes|requires|enforces|includes|covers|monitors|administers|coordinates|maintains|owns|leads|created|has)\s+([a-z0-9\s'-]+)",
+                lambda m: f"{m.group(1)} [[{m.group(2).strip()}]]",
+                cleaned,
+                flags=re.IGNORECASE,
+            )
             # Ensure it has a verb that explains function
             if not re.search(r"\b(is|are|was|were|regulates|manages|oversees|supports|operates|provides|governs|controls|establishes|requires|enforces|includes|covers|monitors|administers|coordinates|maintains|owns|leads|created|has|functions|delivers|facilitates|enables|develops|implements)\b", cleaned, re.IGNORECASE):
                 # Add a generic function description
@@ -312,6 +319,11 @@ class CanonicalNodeRowBuilder:
             # Capitalize
             return entity_type.capitalize()
         
+        # Look for entity type keywords from ontology
+        for entity_type in self.ontology.all_entity_types:
+            if entity_type.lower() in body.lower():
+                return entity_type.capitalize()
+        
         # Look for cooperation/pool/authority patterns
         if any(pattern in body.lower() for pattern in ['cooperation', 'pool', 'authority', 'regulatory']):
             if 'cooperation' in body.lower():
@@ -333,27 +345,8 @@ class CanonicalNodeRowBuilder:
         if match:
             return match.group(1).strip()
         
-        # Look for country names
-        country_patterns = [
-            "Southern Africa",
-            "SADC",
-            "Southern African Development Community",
-            "Africa",
-            "Zimbabwe",
-            "South Africa",
-            "Mozambique",
-            "Kenya",
-            "Nigeria",
-            "Ghana",
-            "Uganda",
-            "Tanzania",
-            "Zambia",
-            "Malawi",
-            "Botswana",
-            "Namibia",
-            "Angola",
-        ]
-        for country in country_patterns:
+        # Look for country names from ontology
+        for country in self.ontology.countries:
             if country in body:
                 return country
         
@@ -369,17 +362,8 @@ class CanonicalNodeRowBuilder:
         if match:
             return match.group(1).strip()
         
-        # Look for sector keywords
-        sector_patterns = [
-            "Energy Sector",
-            "Power Sector",
-            "Electricity Sector",
-            "Infrastructure",
-            "Energy",
-            "Power",
-            "Electricity",
-        ]
-        for sector in sector_patterns:
+        # Look for sector keywords from ontology
+        for sector in self.ontology.sectors:
             if sector.lower() in body.lower():
                 return sector
         
@@ -403,31 +387,26 @@ class CanonicalNodeRowBuilder:
         if match:
             return match.group(1).strip()
         
-        # Look for status keywords
-        status_patterns = [
-            "active",
-            "operational",
-            "established",
-            "founded",
-            "launched",
-            "running",
-            "functional",
-        ]
-        for status in status_patterns:
+        # Look for status keywords from ontology
+        for status in self.ontology.statuses:
             if status.lower() in body.lower():
                 return status.capitalize()
         
         return None
 
     def _extract_object(self, text: str) -> str:
-        match = re.search(r"(?:regulates|manages|oversees|supports|operates|provides|governs|controls|establishes|requires|enforces|includes|covers|monitors|administers|coordinates|maintains|owns|leads|develops|implements|executes|advises|consults|represents|participates|collaborates|partners|created|has)\s+(?:the\s+)?(.+?)(?:\.|$)", text, flags=re.IGNORECASE)
+        # Build pattern from ontology relationship predicates
+        predicates_pattern = "|".join(self._relationship_patterns)
+        match = re.search(rf"(?:{predicates_pattern}|created|has)\s+(?:the\s+)?(.+?)(?:\.|$)", text, flags=re.IGNORECASE)
         if match:
             value = match.group(1).strip().rstrip(".")
             return value
         return ""
 
     def _extract_association_target(self, text: str) -> str:
-        match = re.search(r"(?:relevant to|connected to|associated with|related to|linked to|affiliated with|partnered with|collaborates with|works with|member of|part of)\s+(?:the\s+)?(.+?)(?:\.|$)", text, flags=re.IGNORECASE)
+        # Build pattern from ontology association predicates
+        predicates_pattern = "|".join(self.ontology.association_predicates)
+        match = re.search(rf"(?:{predicates_pattern})\s+(?:the\s+)?(.+?)(?:\.|$)", text, flags=re.IGNORECASE)
         if match:
             value = match.group(1).strip().rstrip(".")
             return value
@@ -455,20 +434,7 @@ class CanonicalNodeRowBuilder:
         cleaned = (text or "").strip()
         if not cleaned:
             return ""
-        association_patterns = [
-            ("relevant_to", r"relevant to\s+(?:the\s+)?(.+?)(?:\.|$)"),
-            ("connected_to", r"connected to\s+(?:the\s+)?(.+?)(?:\.|$)"),
-            ("associated_with", r"associated with\s+(?:the\s+)?(.+?)(?:\.|$)"),
-            ("related_to", r"related to\s+(?:the\s+)?(.+?)(?:\.|$)"),
-            ("linked_to", r"linked to\s+(?:the\s+)?(.+?)(?:\.|$)"),
-            ("affiliated_with", r"affiliated with\s+(?:the\s+)?(.+?)(?:\.|$)"),
-            ("partnered_with", r"partnered with\s+(?:the\s+)?(.+?)(?:\.|$)"),
-            ("collaborates_with", r"collaborates with\s+(?:the\s+)?(.+?)(?:\.|$)"),
-            ("works_with", r"works with\s+(?:the\s+)?(.+?)(?:\.|$)"),
-            ("member_of", r"member of\s+(?:the\s+)?(.+?)(?:\.|$)"),
-            ("part_of", r"part of\s+(?:the\s+)?(.+?)(?:\.|$)"),
-        ]
-        for label, pattern in association_patterns:
+        for label, pattern in self._association_patterns:
             match = re.search(pattern, cleaned, flags=re.IGNORECASE)
             if match:
                 target = match.group(1).strip().rstrip(".")
