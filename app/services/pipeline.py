@@ -95,7 +95,7 @@ class EntityPipelineService:
             ]
             self.orchestrator = SearchOrchestrator(
                 providers=providers,
-                min_evidence=self.MIN_EVIDENCE_COUNT,
+                min_evidence=SearchOrchestrator.MIN_EVIDENCE_COUNT,
                 min_high_quality=1,
                 timeout_per_provider=15.0,
                 max_concurrent_providers=3,
