@@ -176,7 +176,7 @@ RELATIONSHIP_PREDICATES: FrozenSet[str] = frozenset([
     "maintains",
     "owns",
     "leads",
-    "founded",
+    "founded_in",  # PHASE 13: Use founded_in instead of founded to avoid "In" being extracted
     "created",
     "funds",
     "licenses",

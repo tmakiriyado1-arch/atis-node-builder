@@ -264,7 +264,11 @@ class CanonicalNodeRowBuilder:
         return lines
 
     def _build_summary(self, entity: str, claims: Sequence[ResearchClaim]) -> str:
-        """Build a comprehensive summary from entity and claims."""
+        """Build a comprehensive summary from entity and claims.
+        
+        PHASE 13: Ensure backlinks only use resolved canonical entities.
+        Do not create backlinks from arbitrary text.
+        """
         # Try to find the most descriptive claim
         best_claim = None
         best_length = 0
@@ -285,14 +289,11 @@ class CanonicalNodeRowBuilder:
             # Ensure it ends with a period
             if not cleaned.endswith("."):
                 cleaned = cleaned + "."
-            # Add wikilinks to targets in the summary
-            # Pattern: "regulates electricity licensing" -> "regulates [[electricity licensing]]"
-            cleaned = re.sub(
-                r"\b(regulates|manages|oversees|supports|operates|provides|governs|controls|establishes|requires|enforces|includes|covers|monitors|administers|coordinates|maintains|owns|leads|created|has)\s+([a-z0-9\s'-]+)",
-                lambda m: f"{m.group(1)} [[{m.group(2).strip()}]]",
-                cleaned,
-                flags=re.IGNORECASE,
-            )
+            # PHASE 13: Do NOT add wikilinks to arbitrary text
+            # Only add wikilinks to targets that are explicitly resolved entities
+            # For now, skip automatic wikilink creation from text patterns
+            # The LLM should return structured relationships with resolved entities
+            
             # Ensure it has a verb that explains function
             if not re.search(r"\b(is|are|was|were|regulates|manages|oversees|supports|operates|provides|governs|controls|establishes|requires|enforces|includes|covers|monitors|administers|coordinates|maintains|owns|leads|created|has|functions|delivers|facilitates|enables|develops|implements)\b", cleaned, re.IGNORECASE):
                 # Add a generic function description

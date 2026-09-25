@@ -45,11 +45,20 @@ class NodeDraftBuilder:
         if self.rita_entity:
             canonical_entity_name = getattr(self.rita_entity, 'name', None)
         
-        # Derive title - prefer canonical name, then extract from claims
-        if canonical_entity_name:
+        # Derive title - prefer canonical name from RITA, then extract from claims
+        # PHASE 17: Use RITA entity name as canonical title
+        if self.rita_entity:
+            title = getattr(self.rita_entity, 'name', '') or ''
+        elif canonical_entity_name:
             title = canonical_entity_name
         else:
             title = self._derive_title(valid_claims)
+        
+        # PHASE 17: Also update the entity in frontmatter to use canonical name
+        if self.rita_entity:
+            entity_for_frontmatter = getattr(self.rita_entity, 'name', '') or title
+        else:
+            entity_for_frontmatter = title
         
         # Collect all evidence URLs from all claims
         all_sources = set()
@@ -200,9 +209,11 @@ class NodeDraftBuilder:
         body = "\n".join(body_lines)
 
         # Build frontmatter
+        # PHASE 17: Use canonical entity name in frontmatter
+        entity_for_frontmatter = entity_for_frontmatter if 'entity_for_frontmatter' in locals() else title
         frontmatter = {
             "title": title,
-            "entity": title,
+            "entity": entity_for_frontmatter,
             "sources": sources,
         }
         
@@ -362,7 +373,21 @@ class NodeDraftBuilder:
             if claims:
                 first_text = self._claim_text(claims[0])
                 # Remove the entity name from the beginning if present
-                cleaned = re.sub(rf"^{re.escape(entity)}\s*(?:is|are|was|were|be|being|been)\s*", "", first_text, flags=re.IGNORECASE).strip()
+                cleaned = re.sub(rf"^{re.escape(entity)}\s*(?:is|are|was|were|be|being|been|regulates|manages|oversees|supports|operates|provides|governs|controls|establishes)\s*", "", first_text, flags=re.IGNORECASE).strip()
+                # Also try to extract meaningful text from the claim
+                if not cleaned or cleaned.startswith("The") or cleaned.startswith("It"):
+                    # Try to find a verb-based phrase
+                    verb_match = re.search(
+                        r"\b(regulates|manages|oversees|supports|operates|provides|governs|controls|establishes|requires|enforces|includes|covers|monitors|administers|coordinates|maintains|owns|leads|is|was|are|were)\s+([^.]+)",
+                        first_text,
+                        flags=re.IGNORECASE
+                    )
+                    if verb_match:
+                        cleaned = verb_match.group(0).strip()
+                    else:
+                        # Use the full text but ensure it contains a verb
+                        if first_text:
+                            cleaned = first_text
                 if cleaned:
                     parts.append(cleaned)
         

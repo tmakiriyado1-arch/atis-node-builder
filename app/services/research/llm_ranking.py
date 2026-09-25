@@ -124,7 +124,7 @@ Required: Return ONLY valid JSON, no other text."""
         self,
         api_key: Optional[str] = None,
         model: Optional[str] = None,
-        max_results: int = 10,
+        max_results: int = 25,  # PHASE 5: Increased from 10 to allow more results
         min_relevance: str = "medium",
         min_validation: str = "valid",
     ):

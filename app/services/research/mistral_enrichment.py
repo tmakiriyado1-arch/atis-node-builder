@@ -37,7 +37,7 @@ def _dedupe_claim_texts(claims: Iterable[str]) -> List[str]:
 
 def _create_evidence_chunks(
     evidence_records: Sequence[EvidenceRecord],
-    max_chunk_size: int = 2000,
+    max_chunk_size: int = 4000,  # PHASE 5: Increased from 2000 to allow more context
     overlap: int = 200,
 ) -> List[Dict[str, Any]]:
     """Create deterministic chunks from evidence content.
@@ -47,7 +47,7 @@ def _create_evidence_chunks(
     
     Args:
         evidence_records: List of evidence records with full content
-        max_chunk_size: Maximum size of each chunk (default 2000 chars)
+        max_chunk_size: Maximum size of each chunk (default 4000 chars)
         overlap: Number of overlapping characters between chunks (default 200)
         
     Returns:
@@ -140,9 +140,32 @@ async def enrich_evidence_with_mistral(
             "total_chunks": chunk["total_chunks"],
         })
 
+    # PHASE 8-9: Include ontology in the prompt to constrain LLM decisions
+    # Build ontology context for the prompt
+    from app.services.ontology import get_ontology
+    ontology = get_ontology()
+    
+    ontology_context = f"""Canonical ATIS Ontology:
+- Entity Types: {', '.join(sorted(ontology.all_entity_types))}
+- Valid Subtypes: {', '.join(sorted(ontology.organization_subtypes | ontology.concept_subtypes))}
+- Relationship Predicates: {', '.join(sorted(ontology.relationship_predicates))}
+- Association Predicates: {', '.join(sorted(ontology.association_predicates))}
+- Countries: {', '.join(sorted(ontology.countries))}
+- Sectors: {', '.join(sorted(ontology.sectors))}
+- Statuses: {', '.join(sorted(ontology.statuses))}
+
+Ontology Rules:
+- Select only from the canonical ontology values above.
+- If evidence does not support a classification, return no claim rather than inventing a type.
+- Use the exact ontology values (case-sensitive).
+"""
+    
     prompt = (
         "You are extracting candidate research claims from full evidence content.\n"
+        "You are the FINAL SEMANTIC DECISION-MAKER.\n"
         "You receive an entity and evidence content chunks (from full page crawls).\n"
+        "\n"
+        f"{ontology_context}\n\n"
         "Rules:\n"
         "- Only use the supplied evidence content.\n"
         "- Do not use outside knowledge.\n"
@@ -156,7 +179,11 @@ async def enrich_evidence_with_mistral(
         "- Extract key metadata: entity type, country/region, sector, status, headquarters, website, etc.\n"
         "- Extract relationships: what the entity regulates, manages, operates, owns, etc.\n"
         "- Extract associations: what the entity is connected to, part of, member of, etc.\n"
-        "- Extract summary descriptions of what the entity does.\n\n"
+        "- Extract summary descriptions of what the entity does.\n"
+        "- You MUST make the final semantic decisions based on the evidence and ontology.\n"
+        "- Decide: identity, aliases, classification (entity_type/subtype), geography, sector, status.\n"
+        "- Decide: relationships (predicate, target) and associations.\n"
+        "- Decide: summary and what cannot be established (uncertainties).\n\n"
         f"Entity: {entity_name or 'unknown'}\n"
         f"Evidence: {json.dumps(evidence_context, ensure_ascii=False)}\n\n"
         "Required JSON response: {\"claims\":[{\"subject\":\"\",\"predicate\":\"\",\"object\":\"\",\"claim_text\":\"\",\"evidence_urls\":[\"\"]}]}"

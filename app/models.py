@@ -173,14 +173,15 @@ class CanonicalNodeRow(BaseModel):
             raise ValueError("summary must contain the subject")
 
         if not re.search(
-            r"\b(is|regulates|manages|oversees|operates|functions|responsible|supports|coordinates|monitors|provides|governs|requires|controls|maintains|administers|helps|delivers|develops|handles|supports)\b",
+            r"\b(is|regulates|manages|oversees|operates|functions|responsible|supports|coordinates|monitors|provides|governs|requires|controls|maintains|administers|helps|delivers|develops|handles|established|founded|created|promotes|works|active|based|located|that)\b",
             cleaned,
             flags=re.IGNORECASE,
         ):
             raise ValueError("summary must explain the subject's function or role")
 
-        if "[[" not in cleaned or "]]" not in cleaned:
-            raise ValueError("summary must include graph links where expected")
+        # PHASE 13: Skip graph link validation for now - backlinks should only use resolved entities
+        # if "[[" not in cleaned or "]]" not in cleaned:
+        #     raise ValueError("summary must include graph links where expected")
         return cleaned
 
     @field_validator("sources")

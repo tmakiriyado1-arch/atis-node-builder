@@ -633,6 +633,10 @@ class ClaimClassifier:
                 return False
             if normalized in {"is", "is_a", "is_an", "was", "were"}:
                 return False
+            # PHASE 13: Don't create relationships from single words like "In"
+            # Only create relationships when target is a meaningful entity
+            if target and len(target.split()) == 1 and target.lower() in ["in", "a", "an", "the", "is", "was", "are", "were"]:
+                return False
             return True
         return False
 

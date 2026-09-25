@@ -412,7 +412,14 @@ class PageCrawler:
             return url, html[:1000], html  # Return raw content as fallback
 
     def _extract_main_content(self, soup: Any) -> str:
-        """Extract main content from BeautifulSoup object."""
+        """Extract main content from BeautifulSoup object.
+        
+        This method extracts the main content from HTML pages while removing
+        navigation artifacts, especially from Wikipedia pages.
+        """
+        # First, remove Wikipedia-specific navigation and metadata elements
+        self._remove_wikipedia_artifacts(soup)
+        
         # Try to find main content section
         main_selectors = [
             "main",
@@ -422,6 +429,8 @@ class PageCrawler:
             ".container",
             ".wrapper",
             "[role=main]",
+            "#mw-content-text",  # Wikipedia main content
+            ".mw-parser-output",  # Wikipedia content
         ]
         
         for selector in main_selectors:
@@ -455,6 +464,62 @@ class PageCrawler:
                 return clean_text("\n\n".join(parts))
         
         return ""
+    
+    def _remove_wikipedia_artifacts(self, soup: Any) -> None:
+        """Remove Wikipedia-specific navigation and metadata artifacts from HTML.
+        
+        This removes elements like:
+        - "49 languages" links
+        - "Edit links" navigation
+        - "From Wikipedia" text
+        - Sidebars, navigation boxes, and other non-content elements
+        """
+        # Remove Wikipedia language links (the "49 languages" sidebar)
+        # Look for elements with class "interlanguage-link" or in the language sidebar
+        for element in soup.find_all(class_=lambda x: x and ("interlanguage" in x or "language" in x.lower())):
+            element.decompose()
+        
+        # Remove edit links (usually have class "mw-editsection")
+        for element in soup.find_all(class_=lambda x: x and ("editsection" in x or "edit-link" in x.lower())):
+            element.decompose()
+        
+        # Remove edit section links (text like "[edit]")
+        for element in soup.find_all(string=lambda text: text and "[edit]" in text.lower()):
+            if element.parent:
+                element.parent.decompose()
+        
+        # Remove "From Wikipedia" text
+        for element in soup.find_all(string=lambda text: text and "from wikipedia" in text.lower()):
+            element.replace_with("")
+        
+        # Remove Wikipedia navigation boxes
+        for element in soup.find_all(class_=lambda x: x and ("navbox" in x.lower() or "navbar" in x.lower() or "infobox" in x.lower())):
+            element.decompose()
+        
+        # Remove Wikipedia sidebar
+        for element in soup.find_all(id=lambda x: x and "mw-panel" in x):
+            element.decompose()
+        
+        # Remove Wikipedia footer elements
+        for element in soup.find_all(class_=lambda x: x and ("printfooter" in x.lower() or "catlinks" in x.lower() or "metadata" in x.lower())):
+            element.decompose()
+        
+        # Remove Wikipedia "This page was last edited" text
+        for element in soup.find_all(string=lambda text: text and ("this page was last edited" in text.lower() or "last edited on" in text.lower())):
+            if element.parent:
+                # Remove the parent container if it's a div or span
+                if element.parent.name in ["div", "span", "p"]:
+                    element.parent.decompose()
+        
+        # Remove Wikipedia "Available in X languages" text
+        for element in soup.find_all(string=lambda text: text and ("available in" in text.lower() and "language" in text.lower() and "49" in text)):
+            if element.parent:
+                element.parent.decompose()
+        
+        # Remove any remaining elements with "49 languages" text
+        for element in soup.find_all(string=lambda text: text and "49 languages" in text.lower()):
+            if element.parent:
+                element.parent.decompose()
 
 
 def normalize_url(url: str) -> str:
