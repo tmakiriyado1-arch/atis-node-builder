@@ -39,12 +39,21 @@ class WebSearchProvider(SearchProvider):
 
     role = ProviderRole.WEB_DISCOVERY
 
+    # Multiple DuckDuckGo endpoints for fallback
+    # html.duckduckgo.com is the HTML search interface (returns direct URLs)
+    # api.duckduckgo.com is the Instant Answer API (may return proxy URLs)
+    # Try HTML first, fall back to API if connection fails
+    DUCKDUCKGO_ENDPOINTS = [
+        "https://html.duckduckgo.com/html/",
+        "https://api.duckduckgo.com/",
+    ]
+
     # Single, honest User-Agent - no rotation (doesn't help with IP blocking)
     USER_AGENT = "NORAResearchBot/1.0 (+https://github.com/tmakiriyado1-arch/atis-node-builder)"
 
     def __init__(
         self,
-        base_url: str = "https://html.duckduckgo.com/html/",
+        base_url: Optional[str] = None,
         timeout: float = 15.0,
         user_agent: Optional[str] = None,
         max_queries_per_search: int = 5,
@@ -52,7 +61,14 @@ class WebSearchProvider(SearchProvider):
         max_retries: int = 1,  # Reduced retries since orchestrator handles failures
         backoff_factor: float = 1.0,
     ) -> None:
-        self.base_url = base_url
+        # If base_url is provided, use it as the primary (for testing/override)
+        # Otherwise use the list of endpoints for fallback
+        if base_url:
+            self.endpoints = [base_url]
+        else:
+            self.endpoints = self.DUCKDUCKGO_ENDPOINTS.copy()
+        self.current_endpoint_index = 0
+        self.base_url = self.endpoints[self.current_endpoint_index]
         self.timeout = timeout
         self.max_queries_per_search = max_queries_per_search
         self.min_relevance_score = min_relevance_score
@@ -149,11 +165,18 @@ class WebSearchProvider(SearchProvider):
         
         return search_results
     
-    def _get_client(self) -> httpx.AsyncClient:
-        """Get or create HTTP client with connection pooling."""
+    def _get_client(self, accept_header: str = "text/html") -> httpx.AsyncClient:
+        """Get or create HTTP client with connection pooling.
+        
+        Args:
+            accept_header: The Accept header value for this client.
+                          Defaults to 'text/html' for HTML endpoint.
+        """
         if self._client is None or self._client.is_closed:
+            # Create headers with the appropriate Accept value
+            client_headers = {"User-Agent": self.user_agent, "Accept": accept_header}
             self._client = httpx.AsyncClient(
-                headers=self.headers,
+                headers=client_headers,
                 timeout=self.timeout,
                 follow_redirects=True,
                 limits=httpx.Limits(max_keepalive_connections=20, max_connections=100),
@@ -161,64 +184,95 @@ class WebSearchProvider(SearchProvider):
         return self._client
 
     async def _search_single(self, query: str, max_results: int) -> List[Dict[str, Any]]:
-        """Execute a single DuckDuckGo HTML search with retry logic.
+        """Execute a single DuckDuckGo search with retry logic and endpoint fallback.
         
+        Tries each configured endpoint in order until one succeeds.
         Uses DuckDuckGo HTML interface (html.duckduckgo.com) which returns
         actual website URLs instead of proxy URLs.
+        Falls back to API endpoint if HTML endpoint fails.
         """
         cleaned_query = (query or "").strip()
         if not cleaned_query:
             return []
 
-        # Build params for HTML search
-        params = {
-            "q": cleaned_query,
-        }
-
-        # Use lazy-initialized client for connection pooling
-        client = self._get_client()
-        
         last_exception = None
-        for attempt in range(self.max_retries + 1):
-            try:
-                response = await client.get(self.base_url, params=params)
-                response.raise_for_status()
-                break  # Success, exit retry loop
-            except (httpx.HTTPError, httpx.TimeoutException, httpx.ConnectError) as e:
-                last_exception = e
-                # Extract detailed error info
-                error_type = type(e).__name__
-                error_details = str(e)
-                status_code = getattr(e, 'response', None)
-                if status_code and hasattr(status_code, 'status_code'):
-                    error_details = f"HTTP {status_code.status_code}: {error_details}"
-                
-                if attempt < self.max_retries:
-                    # Exponential backoff with jitter
-                    delay = self.backoff_factor * (2 ** attempt) + random.uniform(0, 0.5)
-                    logger.warning(f"[SEARCH] DuckDuckGo HTML {error_type} for '{cleaned_query[:50]}' (attempt {attempt + 1}/{self.max_retries + 1}), retrying in {delay:.1f}s: {error_details}")
-                    await asyncio.sleep(delay)
-                    # Recreate client (no User-Agent rotation - it doesn't help with IP blocking)
-                    if self._client:
-                        await self._client.aclose()
-                        self._client = None
-                    client = self._get_client()
-                else:
-                    logger.error(f"[SEARCH] DuckDuckGo HTML FAILED after {self.max_retries + 1} attempts - {error_type}: {error_details}")
-                    # Mark as provider unavailable - orchestrator will handle this
-                    raise
-        else:
-            # All retries exhausted
-            return []
-
-        # Parse HTML response to extract search results
-        try:
-            results = await self._parse_ddg_html(response.text, cleaned_query, max_results)
-        except Exception as e:
-            logger.error(f"[SEARCH] HTML parse FAILED for '{cleaned_query[:50]}' - {type(e).__name__}: {e}")
-            return []
-
-        return results
+        tried_endpoints: list[str] = []
+        
+        # Try each endpoint with retry logic
+        for endpoint_idx in range(len(self.endpoints)):
+            self.current_endpoint_index = endpoint_idx
+            self.base_url = self.endpoints[self.current_endpoint_index]
+            tried_endpoints.append(self.base_url)
+            
+            # Build params based on endpoint type
+            if "html.duckduckgo.com" in self.base_url:
+                params = {"q": cleaned_query}
+                accept_header = "text/html"
+            else:
+                # API endpoint
+                params = {"q": cleaned_query, "format": "json", "pretty": 0}
+                accept_header = "application/json"
+            
+            for attempt in range(self.max_retries + 1):
+                try:
+                    # Get client with appropriate Accept header for this endpoint
+                    client = self._get_client(accept_header=accept_header)
+                    response = await client.get(self.base_url, params=params)
+                    response.raise_for_status()
+                    
+                    # Parse based on endpoint type
+                    if "html.duckduckgo.com" in self.base_url:
+                        results = await self._parse_ddg_html(response.text, cleaned_query, max_results)
+                    else:
+                        # API endpoint - parse JSON response
+                        results = await self._parse_ddg_api(response.json(), cleaned_query, max_results)
+                    
+                    if results:
+                        logger.info(f"[SEARCH] DuckDuckGo SUCCESS via {self.base_url}")
+                        return results
+                    else:
+                        logger.warning(f"[SEARCH] DuckDuckGo returned empty results from {self.base_url}")
+                        break  # Try next endpoint
+                        
+                except (httpx.HTTPError, httpx.TimeoutException, httpx.ConnectError) as e:
+                    last_exception = e
+                    error_type = type(e).__name__
+                    error_details = str(e)
+                    status_code = getattr(e, 'response', None)
+                    if status_code and hasattr(status_code, 'status_code'):
+                        error_details = f"HTTP {status_code.status_code}: {error_details}"
+                    
+                    if attempt < self.max_retries:
+                        # Exponential backoff with jitter
+                        delay = self.backoff_factor * (2 ** attempt) + random.uniform(0, 0.5)
+                        logger.warning(f"[SEARCH] DuckDuckGo {error_type} for '{cleaned_query[:50]}' via {self.base_url} (attempt {attempt + 1}/{self.max_retries + 1}), retrying in {delay:.1f}s: {error_details}")
+                        await asyncio.sleep(delay)
+                        # Recreate client
+                        if self._client:
+                            await self._client.aclose()
+                            self._client = None
+                        client = self._get_client(accept_header=accept_header)
+                    else:
+                        logger.warning(f"[SEARCH] DuckDuckGo FAILED via {self.base_url} after {self.max_retries + 1} attempts - {error_type}: {error_details}")
+                        # Try next endpoint
+                        break
+        
+        # All endpoints failed
+        if tried_endpoints:
+            logger.error(f"[SEARCH] DuckDuckGo FAILED on all endpoints: {', '.join(tried_endpoints)}")
+            if last_exception:
+                logger.error(f"[SEARCH] Last error: {type(last_exception).__name__}: {last_exception}")
+        
+        # Close client if we created it during this search
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
+        
+        # Raise the last exception so orchestrator can handle provider failure
+        if last_exception:
+            raise last_exception
+        
+        return []
 
     @staticmethod
     def _coerce_item(item: Dict[str, Any]) -> Dict[str, Any]:
@@ -544,6 +598,63 @@ class WebSearchProvider(SearchProvider):
         
         logger.info(f"[SEARCH] Extracted {len(results)} results from DDG HTML")
         return results
+    
+    async def _parse_ddg_api(self, data: Any, query: str, max_results: int) -> List[Dict[str, Any]]:
+        """Parse DuckDuckGo Instant Answer API JSON response.
+        
+        The API endpoint returns JSON with different structure than HTML.
+        Extracts results from the JSON response, filtering out proxy URLs.
+        """
+        results: List[Dict[str, Any]] = []
+        seen_urls: set[str] = set()
+        
+        try:
+            if not isinstance(data, dict):
+                logger.warning(f"[SEARCH] DDG API returned non-dict type: {type(data)}")
+                return []
+            
+            # Handle different response structures
+            # Try "Results" key (list of result dicts)
+            raw_results = data.get("Results", [])
+            if not isinstance(raw_results, list):
+                raw_results = []
+            
+            # Also check for "RelatedTopics" which may contain results
+            related_topics = data.get("RelatedTopics", [])
+            if isinstance(related_topics, list):
+                for topic in related_topics:
+                    if isinstance(topic, dict):
+                        raw_results.append(topic)
+            
+            # Also check for "Definition" or "Abstract"
+            if "Definition" in data and data["Definition"]:
+                definition = data["Definition"]
+                if isinstance(definition, str):
+                    # Try to extract URL from definition if it contains one
+                    pass
+            
+            for item in raw_results[:max_results]:
+                if not isinstance(item, dict):
+                    continue
+                
+                coerced = self._coerce_item(item)
+                if not coerced:
+                    continue
+                
+                url = coerced.get("url", "")
+                normalized = normalize_url(url)
+                if normalized in seen_urls:
+                    continue
+                seen_urls.add(normalized)
+                
+                results.append(coerced)
+                
+            logger.info(f"[SEARCH] Extracted {len(results)} results from DDG API")
+            return results
+            
+        except Exception as e:
+            logger.error(f"[SEARCH] Failed to parse DDG API response - {type(e).__name__}: {e}")
+            return []
     
     @staticmethod
     def _clean_ddg_url(url: str) -> str:
