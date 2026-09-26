@@ -1,6 +1,7 @@
 """
 ATIS Node Builder - Main FastAPI Application
 """
+import asyncio
 import os
 
 from fastapi import FastAPI, HTTPException, Request
@@ -102,6 +103,17 @@ async def startup_event():
     """Initialize services on startup"""
     logger.info("ATIS Node Builder starting up...")
     # TODO: Initialize database connection, schema registry, entity registry, etc.
+    
+    # Run transport diagnostic probe (fire-and-forget to not block startup)
+    async def run_transport_probe():
+        try:
+            from app.services.transport_probe import run_full_probe
+            await run_full_probe()
+        except Exception as e:
+            logger.error(f"[TRANSPORT_PROBE] Failed to run diagnostic: {type(e).__name__}: {e}")
+    
+    # Run probe in background - do not await so startup is not blocked
+    asyncio.create_task(run_transport_probe())
 
 # Shutdown event
 @app.on_event("shutdown")
