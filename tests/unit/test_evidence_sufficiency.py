@@ -1,5 +1,4 @@
 """Tests for evidence sufficiency checking (15+ URL target)."""
-import pytest
 
 from app.services.research.evidence import (
     EvidenceRecord,

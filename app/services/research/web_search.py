@@ -1,20 +1,27 @@
-"""Public, HTTP-based search provider backed by DuckDuckGo instant answer JSON with site scraping.
+"""Public, HTTP-based search provider backed by DuckDuckGo HTML search scraping.
 
 This provider is now one of many in the multi-provider architecture.
 User-Agent rotation has been removed as it doesn't solve IP-level blocking.
+
+The Instant Answer API was replaced with HTML scraping because:
+- Instant Answer API returns DuckDuckGo proxy URLs (duckduckgo.com/...) which are filtered out
+- HTML search returns direct, crawlable URLs from actual websites
 """
 from __future__ import annotations
 
 import asyncio
+import base64
 import random
 import re
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse, parse_qs, urlunparse, unquote
 
 import httpx
 from bs4 import BeautifulSoup
 
 from app.services.research.search_provider import ProviderRole, SearchProvider, SearchResult
 from app.services.research.evidence import normalize_url
+from app.logging import logger
 
 
 class WebSearchProvider(SearchProvider):
@@ -37,7 +44,7 @@ class WebSearchProvider(SearchProvider):
 
     def __init__(
         self,
-        base_url: str = "https://api.duckduckgo.com/",
+        base_url: str = "https://html.duckduckgo.com/html/",
         timeout: float = 15.0,
         user_agent: Optional[str] = None,
         max_queries_per_search: int = 5,
@@ -53,7 +60,7 @@ class WebSearchProvider(SearchProvider):
         self.backoff_factor = backoff_factor
         # Use provided user agent or the default honest one
         self.user_agent = user_agent or self.USER_AGENT
-        self.headers = {"User-Agent": self.user_agent, "Accept": "application/json"}
+        self.headers = {"User-Agent": self.user_agent, "Accept": "text/html"}
         self._client = None  # Lazy-initialized HTTP client for connection pooling
 
     async def search(
@@ -75,17 +82,18 @@ class WebSearchProvider(SearchProvider):
         """
         from app.logging import logger
         
-        logger.info(f"[SEARCH] Starting search for query: {query[:100]}")
+        cleaned_query = (query or "").strip()
+        logger.info(f"[SEARCH] Starting DuckDuckGo HTML search for query: {cleaned_query[:100]}")
         
         # Generate query variants if context is provided
-        queries = self._generate_query_variants(query, context)
+        queries = self._generate_query_variants(cleaned_query, context)
         logger.info(f"[SEARCH] Will try {len(queries)} query variants")
         
         all_results: List[Dict[str, Any]] = []
         seen_urls: set[str] = set()
         
         for query_variant in queries[:self.max_queries_per_search]:
-            logger.info(f"[SEARCH] Trying query variant: {query_variant[:100]}")
+            logger.info(f"[SEARCH] Trying DuckDuckGo query variant: {query_variant[:100]}")
             results = await self._search_single(query_variant, max_results)
             
             # Score and filter results
@@ -117,7 +125,7 @@ class WebSearchProvider(SearchProvider):
         for result in all_results:
             result.pop("_relevance_score", None)
         
-        logger.info(f"[SEARCH] Final results: {len(all_results)} total, {len(high_quality)} high-quality")
+        logger.info(f"[SEARCH] Final DuckDuckGo results: {len(all_results)} total, {len(high_quality)} high-quality")
         
         # Convert to SearchResult format with proper provenance
         search_results = []
@@ -153,18 +161,18 @@ class WebSearchProvider(SearchProvider):
         return self._client
 
     async def _search_single(self, query: str, max_results: int) -> List[Dict[str, Any]]:
-        """Execute a single DuckDuckGo search with retry logic."""
+        """Execute a single DuckDuckGo HTML search with retry logic.
+        
+        Uses DuckDuckGo HTML interface (html.duckduckgo.com) which returns
+        actual website URLs instead of proxy URLs.
+        """
         cleaned_query = (query or "").strip()
         if not cleaned_query:
             return []
 
+        # Build params for HTML search
         params = {
             "q": cleaned_query,
-            "format": "json",
-            "no_redirect": "1",
-            "no_html": "1",
-            "skip_disambig": "1",
-            "pretty": "0",
         }
 
         # Use lazy-initialized client for connection pooling
@@ -178,7 +186,6 @@ class WebSearchProvider(SearchProvider):
                 break  # Success, exit retry loop
             except (httpx.HTTPError, httpx.TimeoutException, httpx.ConnectError) as e:
                 last_exception = e
-                from app.logging import logger
                 # Extract detailed error info
                 error_type = type(e).__name__
                 error_details = str(e)
@@ -189,7 +196,7 @@ class WebSearchProvider(SearchProvider):
                 if attempt < self.max_retries:
                     # Exponential backoff with jitter
                     delay = self.backoff_factor * (2 ** attempt) + random.uniform(0, 0.5)
-                    logger.warning(f"[SEARCH] DuckDuckGo {error_type} for '{cleaned_query[:50]}' (attempt {attempt + 1}/{self.max_retries + 1}), retrying in {delay:.1f}s: {error_details}")
+                    logger.warning(f"[SEARCH] DuckDuckGo HTML {error_type} for '{cleaned_query[:50]}' (attempt {attempt + 1}/{self.max_retries + 1}), retrying in {delay:.1f}s: {error_details}")
                     await asyncio.sleep(delay)
                     # Recreate client (no User-Agent rotation - it doesn't help with IP blocking)
                     if self._client:
@@ -197,90 +204,27 @@ class WebSearchProvider(SearchProvider):
                         self._client = None
                     client = self._get_client()
                 else:
-                    logger.error(f"[SEARCH] DuckDuckGo FAILED after {self.max_retries + 1} attempts - {error_type}: {error_details}")
+                    logger.error(f"[SEARCH] DuckDuckGo HTML FAILED after {self.max_retries + 1} attempts - {error_type}: {error_details}")
                     # Mark as provider unavailable - orchestrator will handle this
                     raise
         else:
             # All retries exhausted
             return []
 
+        # Parse HTML response to extract search results
         try:
-            payload = response.json()
-        except (ValueError, TypeError) as e:
-            from app.logging import logger
-            error_type = type(e).__name__
-            logger.error(f"[SEARCH] JSON parse FAILED for '{cleaned_query[:50]}' - {error_type}: {e}")
+            results = await self._parse_ddg_html(response.text, cleaned_query, max_results)
+        except Exception as e:
+            logger.error(f"[SEARCH] HTML parse FAILED for '{cleaned_query[:50]}' - {type(e).__name__}: {e}")
             return []
 
-        if not isinstance(payload, dict):
-            return []
-
-        results: List[Dict[str, Any]] = []
-        seen: set[str] = set()
-
-        # First, check Abstract - this is the most direct result
-        abstract_text = payload.get("AbstractText")
-        abstract_url = payload.get("AbstractURL")
-        abstract_source = payload.get("Heading") or "Result"
-        
-        # Only use Abstract if it has both text AND a URL (provenance matters)
-        if abstract_url and abstract_text and abstract_url not in seen:
-            seen.add(abstract_url)
-            results.append(
-                {
-                    "title": str(abstract_source),
-                    "url": str(abstract_url),
-                    "snippet": str(abstract_text or ""),
-                }
-            )
-
-        for item in payload.get("RelatedTopics", []):
-            if isinstance(item, dict):
-                result = self._coerce_item(item)
-                if result:
-                    url = str(result.get("url") or "").strip()
-                    if url and url not in seen:
-                        seen.add(url)
-                        results.append(result)
-            elif isinstance(item, list):
-                for nested in item:
-                    if not isinstance(nested, dict):
-                        continue
-                    result = self._coerce_item(nested)
-                    if result:
-                        url = str(result.get("url") or "").strip()
-                        if url and url not in seen:
-                            seen.add(url)
-                            results.append(result)
-
-        # Also check Results
-        for item in payload.get("Results", []):
-            if isinstance(item, dict):
-                result = self._coerce_item(item)
-                if result:
-                    url = str(result.get("url") or "").strip()
-                    if url and url not in seen:
-                        seen.add(url)
-                        results.append(result)
-
-        # Post-process: scrape sites with minimal snippets
-        for result in results:
-            snippet = result.get("snippet", "")
-            url = result.get("url", "")
-            # If snippet is too short (less than 30 chars), try to scrape the site
-            if snippet and len(snippet.strip()) < 30 and url:
-                scraped = await self._scrape_site_content(url)
-                if scraped and len(scraped) > len(snippet):
-                    result["snippet"] = scraped
-
-        return results[:max_results]
+        return results
 
     @staticmethod
     def _coerce_item(item: Dict[str, Any]) -> Dict[str, Any]:
+        """Coerce a result dict into standard format. Kept for backward compatibility."""
         try:
             title = str(item.get("Text") or item.get("Name") or item.get("title") or "Untitled result").strip()
-            # Prioritize FirstURL (actual source) over any proxy URLs
-            # But skip DuckDuckGo proxy URLs (they start with https://duckduckgo.com/)
             url = str(
                 item.get("FirstURL")
                 or item.get("AbstractURL")
@@ -295,7 +239,6 @@ class WebSearchProvider(SearchProvider):
             if url and url.startswith("https://duckduckgo.com/"):
                 return {}
             
-            # For snippet, prefer dedicated snippet field, then Text, then title
             snippet = str(item.get("snippet") or item.get("Text") or item.get("title") or "").strip()
         except (AttributeError, TypeError, ValueError):
             return {}
@@ -475,6 +418,193 @@ class WebSearchProvider(SearchProvider):
         
         return max(0, score)
     
+    async def _parse_ddg_html(self, html: str, query: str, max_results: int) -> List[Dict[str, Any]]:
+        """Parse DuckDuckGo HTML search results page to extract actual website URLs.
+        
+        DuckDuckGo HTML search returns a page with result links that have
+        data-url attributes containing the actual target URLs.
+        """
+        results: List[Dict[str, Any]] = []
+        seen_urls: set[str] = set()
+        
+        try:
+            soup = BeautifulSoup(html, "html.parser")
+        except Exception as e:
+            logger.error(f"[SEARCH] Failed to parse DDG HTML - {type(e).__name__}: {e}")
+            return []
+        
+        # Find all result links - DuckDuckGo uses <a> tags with class "result__url"
+        # or data-url attributes
+        link_selectors = [
+            "a.result__url",
+            "a[class*='result'][href]",
+            "a[href^='http']",
+        ]
+        
+        for selector in link_selectors:
+            links = soup.select(selector)
+            for link in links:
+                if len(results) >= max_results:
+                    break
+                
+                # Try to get URL from data-url attribute (DuckDuckGo's actual target)
+                url = link.get("data-url") or link.get("href", "")
+                
+                if not url:
+                    continue
+                
+                # Clean up URL - remove tracking parameters
+                url = self._clean_ddg_url(url)
+                
+                if not url:
+                    continue
+                
+                # Skip DuckDuckGo proxy URLs
+                if url.startswith("https://duckduckgo.com/"):
+                    continue
+                
+                # Skip already seen URLs
+                normalized = normalize_url(url)
+                if normalized in seen_urls:
+                    continue
+                seen_urls.add(normalized)
+                
+                # Get title from link text or nearby elements
+                title = link.get_text().strip()
+                if not title or len(title) < 5:
+                    # Try to find title in parent or sibling elements
+                    parent = link.find_parent()
+                    if parent:
+                        title = parent.get_text().strip()[:200]
+                
+                if not title:
+                    title = "Untitled result"
+                
+                # Get snippet/description from nearby elements
+                snippet = ""
+                # Look for description elements
+                next_sib = link.find_next_sibling()
+                if next_sib and next_sib.get_text().strip():
+                    snippet = next_sib.get_text().strip()[:500]
+                
+                # Look for parent's text
+                if not snippet:
+                    parent = link.find_parent(class_=re.compile(r"result"))
+                    if parent:
+                        parent_text = parent.get_text().strip()
+                        # Remove the URL from the parent text
+                        if url in parent_text:
+                            snippet = parent_text.replace(url, "").strip()[:500]
+                        else:
+                            snippet = parent_text[:500]
+                
+                results.append({
+                    "title": title,
+                    "url": url,
+                    "snippet": snippet,
+                })
+        
+        # If we didn't find results with the standard selectors, try a broader approach
+        if not results:
+            # Look for any links that might be results
+            all_links = soup.find_all("a", href=True)
+            for link in all_links:
+                if len(results) >= max_results:
+                    break
+                
+                href = link.get("href", "")
+                
+                # Skip DuckDuckGo internal links
+                if href.startswith("/") or href.startswith("https://duckduckgo.com/"):
+                    continue
+                
+                # Clean URL
+                url = self._clean_ddg_url(href)
+                if not url:
+                    continue
+                
+                # Skip non-HTTP links
+                if not url.startswith("http://") and not url.startswith("https://"):
+                    continue
+                
+                normalized = normalize_url(url)
+                if normalized in seen_urls:
+                    continue
+                seen_urls.add(normalized)
+                
+                title = link.get_text().strip()
+                if not title:
+                    title = "Untitled result"
+                
+                results.append({
+                    "title": title,
+                    "url": url,
+                    "snippet": "",
+                })
+        
+        logger.info(f"[SEARCH] Extracted {len(results)} results from DDG HTML")
+        return results
+    
+    @staticmethod
+    def _clean_ddg_url(url: str) -> str:
+        """Clean DuckDuckGo URL to get the actual target URL.
+        
+        Handles:
+        - /l/?uddg=... URL encoding
+        - Regular URLs
+        - URL-encoded URLs
+        """
+        if not url:
+            return ""
+        
+        # Handle DuckDuckGo's /l/ redirect URLs
+        # These have the format: /l/?uddg=<base64_encoded_url>
+        if url.startswith("/l/?"):
+            # Parse the query string
+            try:
+                parsed = urlparse(url)
+                params = parse_qs(parsed.query)
+                
+                # Try uddg parameter (base64 encoded)
+                if "uddg" in params:
+                    encoded = params["uddg"][0]
+                    try:
+                        # Add padding if needed
+                        padding = "=" * (4 - len(encoded) % 4) if len(encoded) % 4 else ""
+                        decoded = base64.urlsafe_b64decode(encoded + padding)
+                        return decoded.decode("utf-8")
+                    except Exception:
+                        pass
+                
+                # Try ud parameter
+                if "ud" in params:
+                    encoded = params["ud"][0]
+                    try:
+                        padding = "=" * (4 - len(encoded) % 4) if len(encoded) % 4 else ""
+                        decoded = base64.urlsafe_b64decode(encoded + padding)
+                        return decoded.decode("utf-8")
+                    except Exception:
+                        pass
+                
+                # Try to extract from query params directly
+                for key, values in params.items():
+                    for val in values:
+                        if val.startswith("http"):
+                            return unquote(val)
+            except Exception:
+                pass
+        
+        # Handle regular URLs
+        if url.startswith("http://") or url.startswith("https://"):
+            # Unquote URL-encoded characters
+            return unquote(url)
+        
+        # If it's a relative URL, try to make it absolute
+        if url.startswith("//"):
+            return "https:" + url
+        
+        return ""
+
     async def _scrape_site_content(self, url: str, timeout: float = 5.0) -> str:
         """Scrape a website to extract meaningful text content when snippet is minimal."""
         try:
