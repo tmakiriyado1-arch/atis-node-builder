@@ -1,6 +1,8 @@
 """Canonical evidence records for NORA search provenance."""
 from __future__ import annotations
 
+import hashlib
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -476,17 +478,92 @@ def classify_evidence_status(
     return EvidenceStatus.USABLE
 
 
+def _canonicalize_content(content: str) -> str:
+    """Conservatively canonicalize evidence content for duplicate detection.
+    
+    This normalization is semantically lossless and only addresses:
+    - Leading/trailing whitespace
+    - Normalized internal whitespace (multiple spaces -> single space)
+    - Normalized line endings (CR/LF -> space)
+    
+    Does NOT:
+    - Lowercase text
+    - Remove punctuation
+    - Remove stopwords
+    - Remove any words
+    
+    Args:
+        content: The raw evidence content string
+        
+    Returns:
+        Canonicalized content string for hashing
+    """
+    if not content:
+        return ""
+    # Normalize line endings to spaces first
+    content = content.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+    # Normalize multiple whitespace to single space
+    content = re.sub(r'\s+', ' ', content)
+    # Trim leading/trailing whitespace
+    return content.strip()
+
+
+def _content_fingerprint(content: str) -> str:
+    """Generate a deterministic fingerprint for evidence content.
+    
+    Uses SHA-256 hash of canonicalized content for exact duplicate detection.
+    
+    Args:
+        content: The evidence content string
+        
+    Returns:
+        Hex digest of SHA-256 hash
+    """
+    canonical = _canonicalize_content(content)
+    if not canonical:
+        return ""
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def deduplicate_evidence(records: Iterable[EvidenceRecord]) -> List[EvidenceRecord]:
-    """Deduplicate evidence by canonical URL while preserving provenance across queries."""
-    deduped: Dict[str, EvidenceRecord] = {}
+    """Deduplicate evidence by canonical URL AND content fingerprint.
+    
+    This function performs two levels of deduplication:
+    1. URL-level: Records with the same canonical URL are merged (preserves provenance)
+    2. Content-level: Records with identical canonical content are deduplicated,
+       retaining only the first occurrence.
+    
+    Content deduplication is CONSERVATIVE - only exact duplicates after
+    canonicalization are removed. Different content, punctuation differences,
+    or case differences are NOT treated as duplicates.
+    
+    Args:
+        records: Iterable of EvidenceRecord objects
+        
+    Returns:
+        List of deduplicated EvidenceRecord objects
+    """
+    # First pass: URL-level deduplication (existing behavior)
+    # Use normalized URL as key to ensure URL normalization is respected
+    url_deduped: Dict[str, EvidenceRecord] = {}
     for record in records:
         if not record or not record.url:
             continue
-        existing = deduped.get(record.url)
+        
+        # Normalize URL for deduplication key
+        normalized_url = normalize_url(record.url)
+        if not normalized_url:
+            continue
+            
+        existing = url_deduped.get(normalized_url)
         if existing is None:
-            deduped[record.url] = record
+            # Add the record's own query to its queries list if not already present
+            if record.query and record.query not in record.queries:
+                record.queries.append(record.query)
+            url_deduped[normalized_url] = record
             continue
 
+        # Merge provenance from duplicate into existing
         if record.query and record.query not in existing.queries:
             existing.queries.append(record.query)
         if record.original_url and record.original_url != existing.original_url:
@@ -495,4 +572,47 @@ def deduplicate_evidence(records: Iterable[EvidenceRecord]) -> List[EvidenceReco
             existing.entity_name = record.entity_name
         if record.entity_id and not existing.entity_id:
             existing.entity_id = record.entity_id
-    return list(deduped.values())
+    
+    # Second pass: Content-level deduplication
+    # Use URL-deduped records as input, deduplicate by content fingerprint
+    content_deduped: Dict[str, EvidenceRecord] = {}
+    for record in url_deduped.values():
+        if not record:
+            continue
+        
+        # Use content for fingerprinting (prefer full content, fall back to snippet)
+        content = getattr(record, 'content', None) or record.snippet or ""
+        fingerprint = _content_fingerprint(content)
+        
+        if not fingerprint:
+            # If no fingerprint (empty content), keep the record
+            # Use URL as fallback key to preserve at least URL deduplication
+            if record.url:
+                content_deduped[record.url] = record
+            continue
+        
+        existing = content_deduped.get(fingerprint)
+        if existing is None:
+            content_deduped[fingerprint] = record
+            continue
+        
+        # Merge provenance from duplicate into existing record
+        # Queries: accumulate all unique queries
+        if record.query and record.query not in existing.queries:
+            existing.queries.append(record.query)
+        
+        # Original URLs: keep first one (cannot merge multiple distinct original URLs)
+        # This is a limitation - we retain the first record's original_url
+        # If the duplicate has an original_url and the existing doesn't, use the duplicate's
+        if not existing.original_url and record.original_url:
+            existing.original_url = record.original_url
+        
+        # Entity name: prefer non-empty value
+        if record.entity_name and not existing.entity_name:
+            existing.entity_name = record.entity_name
+        
+        # Entity ID: prefer non-empty value
+        if record.entity_id and not existing.entity_id:
+            existing.entity_id = record.entity_id
+    
+    return list(content_deduped.values())
