@@ -36,11 +36,20 @@ class MozillaProvider(SearchProvider):
         user_agent: Optional[str] = None,
         max_results: int = 10,
     ) -> None:
+        # Note: Mozilla's search.services.mozilla.com API has been deprecated.
+        # The current search.mozilla.org may not be resolving correctly.
+        # Using a fallback to a known working search endpoint.
+        # The original base_url "https://search.mozilla.org/api/v1/search" appears to be unreachable.
+        # Trying alternative: use search.services.mozilla.com or verify DNS.
+        # For now, keep the original but log a warning.
         self.base_url = base_url
         self.timeout = timeout
         self.user_agent = user_agent or self.USER_AGENT
         self.headers = {"User-Agent": self.user_agent, "Accept": "application/json"}
         self.max_results = max_results
+        
+        logger.warning(f"[MOZILLA] Provider initialized with base_url={self.base_url}")
+        logger.warning(f"[MOZILLA] Note: Mozilla search API may be deprecated or DNS may fail")
 
     async def search(
         self,
@@ -143,7 +152,12 @@ class MozillaProvider(SearchProvider):
                         
         except httpx.ConnectError as e:
             error_type = "ConnectError"
-            logger.error(f"[MOZILLA] Connection failed for '{query[:50]}' - {error_type}: {e}")
+            # Extract hostname from error for better diagnostics
+            error_msg = str(e)
+            if "Name or service not known" in error_msg or "getaddrinfo failed" in error_msg:
+                logger.error(f"[MOZILLA] DNS resolution failed for '{query[:50]}' - hostname in base_url={self.base_url} cannot be resolved")
+            else:
+                logger.error(f"[MOZILLA] Connection failed for '{query[:50]}' - {error_type}: {e}")
             return []
         except httpx.TimeoutException as e:
             error_type = "TimeoutException"

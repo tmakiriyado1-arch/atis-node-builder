@@ -401,12 +401,15 @@ class ResearchEngine:
                     api_key=getattr(self.llm_provider, "api_key", config.MISTRAL_API_KEY),
                     model=getattr(self.llm_provider, "model", config.MISTRAL_MODEL),
                 )
-            except Exception:
+            except Exception as e:
+                logger.warning(f"[ENRICH {cleaned_name}] LLM enrichment failed: {e}")
                 claims = []
             if not claims:
                 claims = []
         if not claims:
             # Fallback: use full content from evidence for claims
+            # This is an intentional degraded mode when LLM enrichment fails
+            logger.info(f"[ENRICH {cleaned_name}] Fallback generated {len(deduped_evidence)} claims from {len(deduped_evidence)} evidence items")
             for evidence in deduped_evidence:
                 field_name = (fields_to_research or ["entity_profile"])[0]
                 # Use full content if available, otherwise use snippet
@@ -420,7 +423,7 @@ class ResearchEngine:
                         evidence_passage=content,
                         source_type="webpage",
                         confidence=0.0,
-                        extraction_method="search_result",
+                        extraction_method="fallback",  # Mark as fallback for traceability
                         extracted_at=datetime.now(),
                         evidence_urls=[evidence.url] if evidence.url else [],
                     )

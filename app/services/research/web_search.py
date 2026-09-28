@@ -268,10 +268,10 @@ class WebSearchProvider(SearchProvider):
             await self._client.aclose()
             self._client = None
         
-        # Raise the last exception so orchestrator can handle provider failure
-        if last_exception:
-            raise last_exception
-        
+        # Do NOT raise the exception - return empty results instead
+        # This allows the orchestrator to continue with other providers
+        # The orchestrator will see this provider returned 0 results and mark it as failed
+        # but won't let it crash the entire research pipeline
         return []
 
     @staticmethod

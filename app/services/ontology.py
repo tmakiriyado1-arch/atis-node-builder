@@ -460,6 +460,20 @@ class ATISOntology:
     all_entity_types: FrozenSet[str] = ALL_ENTITY_TYPES
     concept_subtype_mapping: Dict[str, Optional[str]] = field(default_factory=lambda: dict(CONCEPT_SUBTYPE_MAPPING))
     
+    # Subtypes for ontology prompt - derived from organization_types and concept_subtype_mapping
+    # These are computed properties for convenience in enrichment prompts
+    @property
+    def organization_subtypes(self) -> FrozenSet[str]:
+        """Get organization subtypes (same as organization_types for now)."""
+        return self.organization_types
+    
+    @property
+    def concept_subtypes(self) -> FrozenSet[str]:
+        """Get concept subtypes from the mapping values."""
+        # Extract non-None values from concept_subtype_mapping
+        subtypes = {v for v in self.concept_subtype_mapping.values() if v is not None}
+        return frozenset(subtypes)
+    
     # Predicates
     relationship_predicates: FrozenSet[str] = RELATIONSHIP_PREDICATES
     association_predicates: FrozenSet[str] = ASSOCIATION_PREDICATES

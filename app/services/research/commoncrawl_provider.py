@@ -174,9 +174,16 @@ class CommonCrawlProvider(SearchProvider):
     async def _search_by_text(self, query: str, max_results: int) -> List[Dict[str, Any]]:
         """Search Common Crawl by text content (using full-text search)."""
         try:
-            # This uses the CC full-text search endpoint
-            # Note: This may not always be available, so we fall back
-            search_url = f"https://index.commoncrawl.org/CC-MAIN-{self._get_latest_crawl()}-text-index"
+            # Get the latest crawl identifier
+            latest_crawl = self._get_latest_crawl()
+            
+            # Build the text index URL correctly
+            # The URL should be: https://index.commoncrawl.org/{crawl_id}-text-index
+            # where crawl_id is like "CC-MAIN-2026-40"
+            # The text index suffix is "-text-index", not part of the crawl_id
+            search_url = f"https://index.commoncrawl.org/{latest_crawl}-text-index"
+            
+            logger.info(f"[COMMONCRAWL] Text search URL: {search_url}")
             
             params = {
                 "q": query,
@@ -186,6 +193,21 @@ class CommonCrawlProvider(SearchProvider):
             
             async with httpx.AsyncClient(headers=self.headers, timeout=self.timeout) as client:
                 response = await client.get(search_url, params=params)
+                
+                # Handle redirects properly
+                if response.status_code in (301, 302, 303, 307, 308):
+                    location = response.headers.get("location", "")
+                    logger.info(f"[COMMONCRAWL] Redirect response '{response.status_code} Redirect' for url: {search_url}")
+                    logger.info(f"[COMMONCRAWL] Redirect location: {location}")
+                    # Follow the redirect by making a new request to the location
+                    # But only if it's a valid Common Crawl URL
+                    if location and location.startswith("https://index.commoncrawl.org/"):
+                        redirect_response = await client.get(location, params=params)
+                        response = redirect_response
+                    else:
+                        logger.error(f"[COMMONCRAWL] Redirect to non-CC URL: {location}, skipping")
+                        return []
+                
                 response.raise_for_status()
                 
                 # Handle empty or invalid JSON response
@@ -434,6 +456,7 @@ class CommonCrawlProvider(SearchProvider):
                 # Wrap to previous year
                 year -= 1
                 test_week = 52  # Last week of previous year
-            return f"CC-MAIN-{year}-{test_week:02d}"
+            crawl_id = f"CC-MAIN-{year}-{test_week:02d}"
+            return crawl_id
         
         return f"CC-MAIN-{year}-{week:02d}"

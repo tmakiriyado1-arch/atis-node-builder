@@ -77,7 +77,9 @@ class SearXNGProvider(SearchProvider):
             "Accept": "application/json",
         }
         
+        # Log the normalized endpoint being used (without secrets)
         logger.info(f"[SEARXNG] Provider initialized with base_url={self.base_url}, timeout={self.timeout}s")
+        logger.info(f"[SEARXNG] Normalized SearXNG endpoint: {self.base_url}/search")
 
     async def search(
         self,
@@ -108,8 +110,12 @@ class SearXNGProvider(SearchProvider):
         
         try:
             # Build the search URL with proper URL encoding
+            # The base_url should already be normalized without trailing slash
             search_path = f"/search?q={quote_plus(cleaned_query)}&format=json"
             url = f"{self.base_url}{search_path}"
+            
+            # Log the exact URL being requested (without the API key which is in headers)
+            logger.info(f"[SEARXNG] Request URL: {url}")
             
             async with httpx.AsyncClient(
                 headers=self.headers,
@@ -144,6 +150,7 @@ class SearXNGProvider(SearchProvider):
                     return []
                 
                 # Validate and parse SearXNG response
+                # The _parse_searxng_response method already validates structure
                 results = self._parse_searxng_response(data, cleaned_query, effective_max)
                 logger.info(f"[SEARXNG] Returning {len(results)} results for '{cleaned_query[:50]}'")
                 return results
@@ -153,6 +160,10 @@ class SearXNGProvider(SearchProvider):
             return []
         except httpx.TimeoutException as e:
             logger.error(f"[SEARXNG] Timeout for '{cleaned_query[:50]}' - {type(e).__name__}: {e}")
+            return []
+        except httpx.HTTPStatusError as e:
+            # HTTP status error (4xx, 5xx) - application-level failure
+            logger.error(f"[SEARXNG] HTTP error for '{cleaned_query[:50]}' - HTTP {e.response.status_code}: {e}")
             return []
         except httpx.HTTPError as e:
             logger.error(f"[SEARXNG] HTTP error for '{cleaned_query[:50]}' - {type(e).__name__}: {e}")
@@ -197,19 +208,27 @@ class SearXNGProvider(SearchProvider):
         """
         results: List[Dict[str, Any]] = []
         
-        # Validate response structure
+        # Validate response structure - must be a dict
         if not isinstance(data, dict):
             logger.warning(f"[SEARXNG] Response is not a dict, got {type(data).__name__}")
             return []
         
-        # Check for 'results' key
+        # Check for 'results' key - required for valid SearXNG response
         if "results" not in data:
-            logger.warning(f"[SEARXNG] Missing 'results' key in response")
+            logger.warning(f"[SEARXNG] Missing 'results' key in response - invalid SearXNG format")
             return []
         
         raw_results = data["results"]
+        
+        # Validate that 'results' is a list
         if not isinstance(raw_results, list):
             logger.warning(f"[SEARXNG] 'results' is not a list, got {type(raw_results).__name__}")
+            return []
+        
+        # Empty results array is valid - return empty list (not an error)
+        # This means the query returned no results, which is different from a failure
+        if len(raw_results) == 0:
+            logger.info(f"[SEARXNG] Valid response with empty results array (no matches found)")
             return []
         
         # Process each result

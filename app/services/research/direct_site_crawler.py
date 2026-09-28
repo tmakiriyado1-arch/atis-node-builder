@@ -131,10 +131,20 @@ class DirectSiteCrawler(SearchProvider):
         return results[:max_pages]
 
     async def _crawl_url(self, url: str) -> List[Dict[str, Any]]:
-        """Crawl a single URL and extract information."""
+        """Crawl a single URL and extract information.
+        
+        Handles 403 Forbidden gracefully as a normal unavailable source.
+        Does NOT attempt anti-bot circumvention.
+        """
         try:
             async with httpx.AsyncClient(headers=self.headers, timeout=self.crawl_timeout) as client:
                 response = await client.get(url)
+                
+                # Handle 403 Forbidden gracefully
+                if response.status_code == 403:
+                    logger.warning(f"[DIRECT_CRAWL] Failed to crawl {url}: Client error '403 Forbidden' - site protection or access denied")
+                    return []
+                
                 response.raise_for_status()
                 
                 content_type = response.headers.get("Content-Type", "").lower()
@@ -145,12 +155,12 @@ class DirectSiteCrawler(SearchProvider):
                 html = response.text
                 soup = BeautifulSoup(html, "html.parser")
                 
+                # Extract page title BEFORE removing head
+                title = soup.title.string if soup.title else url
+                
                 # Remove unwanted elements
                 for element in soup(["script", "style", "nav", "footer", "head", "iframe", "svg"]):
                     element.decompose()
-                
-                # Extract page title
-                title = soup.title.string if soup.title else url
                 
                 # Extract main content
                 main_content = self._extract_main_content(soup)
@@ -174,6 +184,18 @@ class DirectSiteCrawler(SearchProvider):
                 
                 return [result]
                 
+        except httpx.ConnectError as e:
+            logger.warning(f"[DIRECT_CRAWL] Connection failed for {url}: {e}")
+            return []
+        except httpx.TimeoutException as e:
+            logger.warning(f"[DIRECT_CRAWL] Timeout crawling {url}: {e}")
+            return []
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 403:
+                logger.warning(f"[DIRECT_CRAWL] Failed to crawl {url}: Client error '403 Forbidden'")
+            else:
+                logger.warning(f"[DIRECT_CRAWL] HTTP error crawling {url}: HTTP {e.response.status_code}")
+            return []
         except Exception as e:
             logger.error(f"[DIRECT_CRAWL] Failed to crawl {url}: {e}")
             return []
