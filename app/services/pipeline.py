@@ -61,6 +61,7 @@ class EntityPipelineService:
         from app.services.research.direct_site_crawler import DirectSiteCrawler
         from app.services.research.commoncrawl_provider import CommonCrawlProvider
         from app.services.research.mozilla_provider import MozillaProvider
+        from app.services.research.searxng_provider import SearXNGProvider
         
         self.registry = registry or EntityRegistry()
         self.resolver = resolver or EntityResolver(self.registry)
@@ -81,10 +82,13 @@ class EntityPipelineService:
             # This avoids the orchestrator trying to crawl fake URLs
             self.orchestrator = None
         else:
-            # Lead with Mozilla and DuckDuckGo as primary search providers
+            # Lead with SearXNG as primary search provider (metasearch engine)
+            # This aggregates results from Wikipedia, Brave, Google CSE, Wikidata
+            # Mozilla as secondary, DuckDuckGo as tertiary
             # Wikipedia and Wikidata for authoritative data
             # GDELT for news, DirectSiteCrawler for official sites, CommonCrawl as fallback
             providers = [
+                SearXNGProvider(),
                 MozillaProvider(),
                 search_provider or WebSearchProvider(),
                 WikipediaProvider(),

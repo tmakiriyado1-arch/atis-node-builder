@@ -194,17 +194,23 @@ class ResearchEngine:
     ) -> SearchOrchestrator:
         """Create a default SearchOrchestrator with multiple providers.
         
-        Leads with Mozilla and DuckDuckGo as primary search providers,
-        followed by Wikipedia and Wikidata for authoritative data.
+        Leads with SearXNG as primary search provider (metasearch engine),
+        followed by Mozilla as secondary, then Wikipedia and Wikidata for
+        authoritative data.
         """
         from app.services.research.mozilla_provider import MozillaProvider
+        from app.services.research.searxng_provider import SearXNGProvider
         
         providers = []
         
-        # Lead with Mozilla as primary search provider
+        # Lead with SearXNG as primary search provider (metasearch engine)
+        # This aggregates results from multiple search engines (Wikipedia, Brave, Google CSE, Wikidata)
+        providers.append(SearXNGProvider())
+        
+        # Add Mozilla as secondary search provider
         providers.append(MozillaProvider())
         
-        # Add DuckDuckGo as secondary search provider
+        # Add DuckDuckGo as tertiary search provider
         ddg_provider = fallback_provider or WebSearchProvider()
         providers.append(ddg_provider)
         

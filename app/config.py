@@ -23,6 +23,12 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 SEARCH_TIMEOUT = int(os.getenv("SEARCH_TIMEOUT", "30"))
 MAX_SOURCES_PER_QUERY = int(os.getenv("MAX_SOURCES_PER_QUERY", "10"))
 
+# SearXNG metasearch engine
+SEARXNG_BASE_URL = os.getenv(
+    "SEARXNG_BASE_URL",
+    "https://crispy-potato-vpr6pwwjrqxvfwx5p-8888.app.github.dev",
+)
+
 # Google Sheets (read-only ENTITY_RAW intake)
 GOOGLE_AUTH_MODE = os.getenv("GOOGLE_AUTH_MODE", "WORKLOAD_IDENTITY_FEDERATION").upper()
 GOOGLE_PROJECT_ID = os.getenv("GOOGLE_PROJECT_ID", "")

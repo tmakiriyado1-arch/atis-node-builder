@@ -19,6 +19,7 @@ from app.services.research.gdelt_provider import GDELTProvider
 from app.services.research.direct_site_crawler import DirectSiteCrawler
 from app.services.research.commoncrawl_provider import CommonCrawlProvider
 from app.services.research.mozilla_provider import MozillaProvider
+from app.services.research.searxng_provider import SearXNGProvider
 
 __all__ = [
     "EvidenceRecord",
@@ -37,6 +38,7 @@ __all__ = [
     "GDELTProvider",
     "DirectSiteCrawler",
     "CommonCrawlProvider",
+    "SearXNGProvider",
     "deduplicate_evidence",
     "enrich_evidence_with_mistral",
     "normalize_search_result",
