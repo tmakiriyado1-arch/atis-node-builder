@@ -29,6 +29,12 @@ SEARXNG_BASE_URL = os.getenv(
     "https://crispy-potato-vpr6pwwjrqxvfwx5p-8888.app.github.dev",
 )
 
+# Local SearXNG instance configuration
+SEARXNG_LOCAL_ENABLED = os.getenv("SEARXNG_LOCAL_ENABLED", "true").lower() == "true"
+SEARXNG_LOCAL_PORT = int(os.getenv("SEARXNG_LOCAL_PORT", "8888"))
+SEARXNG_LOCAL_HOST = os.getenv("SEARXNG_LOCAL_HOST", "127.0.0.1")
+SEARXNG_REPO_PATH = os.getenv("SEARXNG_REPO_PATH", "/workspace/github__tmakiriyado1-arch__atis-searxng")
+
 # Google Sheets (read-only ENTITY_RAW intake)
 GOOGLE_AUTH_MODE = os.getenv("GOOGLE_AUTH_MODE", "WORKLOAD_IDENTITY_FEDERATION").upper()
 GOOGLE_PROJECT_ID = os.getenv("GOOGLE_PROJECT_ID", "")

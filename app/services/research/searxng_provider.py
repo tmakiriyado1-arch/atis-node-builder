@@ -7,7 +7,10 @@ SearXNG aggregates results from multiple search engines (Wikipedia, Brave, Googl
 Wikidata, etc.) and returns them in a unified JSON format.
 
 Configuration:
-    SEARXNG_BASE_URL: The base URL of the SearXNG instance (e.g., https://crispy-potato-vpr6pwwjrqxvfwx5p-8888.app.github.dev)
+    SEARXNG_BASE_URL: The base URL of the SearXNG instance
+    SEARXNG_LOCAL_ENABLED: Enable local SearXNG instance (default: True)
+    SEARXNG_LOCAL_PORT: Port for local SearXNG (default: 8888)
+    SEARXNG_REPO_PATH: Path to atis-searxng repository
 
 The provider handles:
     - HTTP errors (connection, timeout, status codes)
@@ -15,9 +18,11 @@ The provider handles:
     - Missing or invalid 'results' array
     - Empty result sets
     - Result normalization to SearchResult format
+    - Local SearXNG instance management with fallback to external URL
 """
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote_plus
 
@@ -25,6 +30,7 @@ import httpx
 
 from app import config
 from app.services.research.search_provider import ProviderRole, SearchProvider, SearchResult
+from app.services.research.searxng_manager import get_searxng_manager
 from app.logging import logger
 
 
@@ -50,20 +56,49 @@ class SearXNGProvider(SearchProvider):
         timeout: float = 15.0,
         user_agent: Optional[str] = None,
         max_results: int = 10,
+        use_local: Optional[bool] = None,
+        local_port: int = 8888,
     ) -> None:
         """Initialize the SearXNG provider.
         
         Args:
             base_url: Base URL of the SearXNG instance. If not provided,
-                     uses SEARXNG_BASE_URL from config or defaults to
-                     https://crispy-potato-vpr6pwwjrqxvfwx5p-8888.app.github.dev
+                     uses SEARXNG_BASE_URL from config or tries local instance
             timeout: Request timeout in seconds
             user_agent: User-Agent string for HTTP requests
             max_results: Maximum number of results to return per query
+            use_local: Whether to try local SearXNG first (default: from config)
+            local_port: Port for local SearXNG instance
         """
-        # Use provided base_url, or fall back to config, or use the proven Codespaces URL
-        self.base_url = base_url or getattr(config, 'SEARXNG_BASE_URL', None)
-        if not self.base_url:
+        # Determine if we should use local SearXNG
+        self.use_local = use_local if use_local is not None else getattr(config, 'SEARXNG_LOCAL_ENABLED', True)
+        self.local_port = local_port
+        
+        # Try to determine base_url in this order:
+        # 1. Provided base_url
+        # 2. SEARXNG_BASE_URL from config
+        # 3. Local SearXNG manager's base_url (if local is enabled and available)
+        # 4. Default external URL (fallback)
+        
+        self._external_base_url = base_url or getattr(config, 'SEARXNG_BASE_URL', None)
+        
+        # Check if local SearXNG is available
+        self._local_available = False
+        self._base_url_from_manager: Optional[str] = None
+        
+        if self.use_local:
+            manager = get_searxng_manager()
+            if manager.enabled and manager.repo_path:
+                self._base_url_from_manager = manager.base_url
+                self._local_available = True
+        
+        # Determine final base_url
+        if self._external_base_url:
+            self.base_url = self._external_base_url
+        elif self._base_url_from_manager:
+            self.base_url = self._base_url_from_manager
+        else:
+            # Fallback to default
             self.base_url = "https://crispy-potato-vpr6pwwjrqxvfwx5p-8888.app.github.dev"
         
         # Ensure base_url doesn't have trailing slash
@@ -79,6 +114,7 @@ class SearXNGProvider(SearchProvider):
         
         # Log the normalized endpoint being used (without secrets)
         logger.info(f"[SEARXNG] Provider initialized with base_url={self.base_url}, timeout={self.timeout}s")
+        logger.info(f"[SEARXNG] Local SearXNG enabled: {self.use_local}, available: {self._local_available}")
         logger.info(f"[SEARXNG] Normalized SearXNG endpoint: {self.base_url}/search")
 
     async def search(
@@ -88,6 +124,17 @@ class SearXNGProvider(SearchProvider):
         context: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         """Search using the SearXNG metasearch engine.
+        
+        This method will:
+        1. Try to use the configured base_url (external or local)
+        2. If using local and not yet started, attempt to start local SearXNG
+        3. If local start fails, fall back to external URL
+        4. If all SearXNG options fail, return empty list (not an error)
+        5. Return empty list on any error (does NOT raise exceptions)
+        
+        The provider is designed to be resilient - failures return empty results
+        rather than raising exceptions, allowing the orchestrator to continue with
+        other providers.
         
         Args:
             query: The search query string
@@ -108,11 +155,30 @@ class SearXNGProvider(SearchProvider):
         
         logger.info(f"[SEARXNG] Searching for '{cleaned_query[:100]}' (max_results={effective_max})")
         
+        # Get current base_url and try to determine if we should start local
+        current_base_url = self.base_url
+        manager = get_searxng_manager()
+        
+        # Check if we need to start local SearXNG
+        local_started = False
+        if self.use_local and manager.enabled:
+            if not manager.is_running:
+                logger.info(f"[SEARXNG] Local SearXNG not running, attempting to start...")
+                if await manager.start():
+                    local_started = True
+                    current_base_url = manager.base_url
+                    logger.info(f"[SEARXNG] Local SearXNG started at {current_base_url}")
+                else:
+                    logger.warning(f"[SEARXNG] Failed to start local SearXNG, using configured URL: {current_base_url}")
+            elif manager.is_running:
+                # Use the manager's base_url if it's running
+                current_base_url = manager.base_url
+        
         try:
             # Build the search URL with proper URL encoding
             # The base_url should already be normalized without trailing slash
             search_path = f"/search?q={quote_plus(cleaned_query)}&format=json"
-            url = f"{self.base_url}{search_path}"
+            url = f"{current_base_url}{search_path}"
             
             # Log the exact URL being requested (without the API key which is in headers)
             logger.info(f"[SEARXNG] Request URL: {url}")
@@ -138,6 +204,11 @@ class SearXNGProvider(SearchProvider):
                     logger.warning(
                         f"[SEARXNG] HTTP {response.status_code} for query '{cleaned_query[:50]}'"
                     )
+                    # If we started local SearXNG and it's not working, stop it
+                    if local_started:
+                        logger.warning(f"[SEARXNG] Local SearXNG returned error, stopping it")
+                        await manager.stop()
+                    # Return empty - this is expected when SearXNG is unavailable
                     return []
                 
                 # Parse JSON response
@@ -157,19 +228,30 @@ class SearXNGProvider(SearchProvider):
                 
         except httpx.ConnectError as e:
             logger.error(f"[SEARXNG] Connection failed for '{cleaned_query[:50]}' - {type(e).__name__}: {e}")
+            # If we started local and it's not connecting, stop it
+            if local_started:
+                await manager.stop()
             return []
         except httpx.TimeoutException as e:
             logger.error(f"[SEARXNG] Timeout for '{cleaned_query[:50]}' - {type(e).__name__}: {e}")
+            if local_started:
+                await manager.stop()
             return []
         except httpx.HTTPStatusError as e:
             # HTTP status error (4xx, 5xx) - application-level failure
             logger.error(f"[SEARXNG] HTTP error for '{cleaned_query[:50]}' - HTTP {e.response.status_code}: {e}")
+            if local_started:
+                await manager.stop()
             return []
         except httpx.HTTPError as e:
             logger.error(f"[SEARXNG] HTTP error for '{cleaned_query[:50]}' - {type(e).__name__}: {e}")
+            if local_started:
+                await manager.stop()
             return []
         except Exception as e:
             logger.error(f"[SEARXNG] Unexpected error for '{cleaned_query[:50]}' - {type(e).__name__}: {e}")
+            if local_started:
+                await manager.stop()
             return []
 
     def _parse_searxng_response(
