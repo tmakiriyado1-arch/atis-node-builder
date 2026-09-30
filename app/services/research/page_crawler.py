@@ -386,12 +386,17 @@ class PageCrawler:
         try:
             soup = BeautifulSoup(html, "html.parser")
             
-            # Extract title
+            # Extract title BEFORE removing head
             title = soup.title.string if soup.title else url
             
             # Remove unwanted elements
-            for element in soup(["script", "style", "nav", "footer", "head", "iframe", "svg", "noscript"]):
+            for element in soup(["script", "style", "nav", "footer", "iframe", "svg", "noscript", "form", "input", "button", "select", "textarea"]):
                 element.decompose()
+            
+            # Remove head separately to preserve title extraction
+            head = soup.find("head")
+            if head:
+                head.decompose()
             
             # Try to find main content
             content = self._extract_main_content(soup)
@@ -405,6 +410,9 @@ class PageCrawler:
             if not content:
                 content = html[:1000]  # Last resort: first 1000 chars
             
+            # Clean the extracted content
+            content = clean_text(content)
+            
             return str(title).strip(), content.strip(), html
             
         except Exception as e:
@@ -415,10 +423,14 @@ class PageCrawler:
         """Extract main content from BeautifulSoup object.
         
         This method extracts the main content from HTML pages while removing
-        navigation artifacts, especially from Wikipedia pages.
+        navigation artifacts, especially from Wikipedia pages and modern site
+        builders like Wix, Squarespace, etc.
         """
         # First, remove Wikipedia-specific navigation and metadata elements
         self._remove_wikipedia_artifacts(soup)
+        
+        # Remove site builder artifacts (Wix, Squarespace, etc.)
+        self._remove_site_builder_artifacts(soup)
         
         # Try to find main content section
         main_selectors = [
@@ -431,6 +443,19 @@ class PageCrawler:
             "[role=main]",
             "#mw-content-text",  # Wikipedia main content
             ".mw-parser-output",  # Wikipedia content
+            # Wix-specific selectors
+            "#SITE_CONTAINER",
+            ".WIX_ADS",
+            "#COMPONENT_CONTAINER",
+            # Common content selectors
+            ".post-content",
+            ".entry-content",
+            ".page-content",
+            ".site-content",
+            ".main-article",
+            ".article-body",
+            ".content-wrapper",
+            ".content-main",
         ]
         
         for selector in main_selectors:
@@ -520,6 +545,44 @@ class PageCrawler:
         for element in soup.find_all(string=lambda text: text and "49 languages" in text.lower()):
             if element.parent:
                 element.parent.decompose()
+
+    def _remove_site_builder_artifacts(self, soup: Any) -> None:
+        """Remove artifacts from site builders like Wix, Squarespace, etc.
+        
+        This removes elements commonly found in site-builder generated pages
+        that contain boilerplate, navigation, or non-content elements.
+        """
+        # Remove Wix-specific elements
+        for element in soup.find_all(class_=lambda x: x and ("wix" in x.lower() or "WIX" in x)):
+            element.decompose()
+        
+        # Remove Wix data elements
+        for element in soup.find_all(attrs={"data-testid": True}):
+            element.decompose()
+        
+        # Remove Squarespace-specific elements
+        for element in soup.find_all(class_=lambda x: x and ("sqs" in x.lower() or "squarespace" in x.lower())):
+            element.decompose()
+        
+        # Remove generic site builder header/footer elements
+        for element in soup.find_all(class_=lambda x: x and ("header" in x.lower() or "footer" in x.lower() or "navbar" in x.lower() or "navigation" in x.lower())):
+            element.decompose()
+        
+        # Remove social media and sharing widgets
+        for element in soup.find_all(class_=lambda x: x and ("social" in x.lower() or "share" in x.lower() or "widget" in x.lower())):
+            element.decompose()
+        
+        # Remove cookie banners and consent forms
+        for element in soup.find_all(class_=lambda x: x and ("cookie" in x.lower() or "consent" in x.lower() or "privacy" in x.lower() or "gdpr" in x.lower())):
+            element.decompose()
+        
+        # Remove modal and overlay elements
+        for element in soup.find_all(class_=lambda x: x and ("modal" in x.lower() or "overlay" in x.lower() or "popup" in x.lower() or "dialog" in x.lower())):
+            element.decompose()
+        
+        # Remove advertisement elements
+        for element in soup.find_all(class_=lambda x: x and ("ad" in x.lower() or "advert" in x.lower() or "banner" in x.lower() or "sponsored" in x.lower())):
+            element.decompose()
 
 
 def normalize_url(url: str) -> str:

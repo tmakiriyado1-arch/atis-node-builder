@@ -159,8 +159,11 @@ class DirectSiteCrawler(SearchProvider):
                 title = soup.title.string if soup.title else url
                 
                 # Remove unwanted elements
-                for element in soup(["script", "style", "nav", "footer", "head", "iframe", "svg"]):
+                for element in soup(["script", "style", "nav", "footer", "head", "iframe", "svg", "noscript", "form", "input", "button", "select", "textarea"]):
                     element.decompose()
+                
+                # Remove site builder artifacts
+                self._remove_site_builder_artifacts(soup)
                 
                 # Extract main content
                 main_content = self._extract_main_content(soup)
@@ -173,6 +176,10 @@ class DirectSiteCrawler(SearchProvider):
                 
                 if not main_content:
                     return []
+                
+                # Clean the extracted content
+                from app.services.research.page_crawler import clean_text
+                main_content = clean_text(main_content)
                 
                 # Create result
                 result = {
@@ -230,32 +237,116 @@ class DirectSiteCrawler(SearchProvider):
             return []
 
     def _extract_main_content(self, soup: Any) -> str:
-        """Extract main content from a BeautifulSoup object."""
-        # Try to find main content section
-        main = soup.find("main") or soup.find("article") or soup.find(class_=re.compile("main|content|body"))
+        """Extract main content from a BeautifulSoup object.
         
-        if main:
-            text = main.get_text().strip()
-            if len(text) > 100:  # Only return if substantial
-                return self._clean_text(text)
+        This method extracts the main content from HTML pages while removing
+        navigation artifacts, especially from Wikipedia pages and modern site
+        builders like Wix, Squarespace, etc.
+        """
+        # Remove site builder artifacts
+        self._remove_site_builder_artifacts(soup)
+        
+        # Try to find main content section
+        main_selectors = [
+            "main",
+            "article",
+            ".main-content",
+            ".content",
+            ".container",
+            ".wrapper",
+            "[role=main]",
+            "#mw-content-text",
+            ".mw-parser-output",
+            # Wix-specific selectors
+            "#SITE_CONTAINER",
+            ".WIX_ADS",
+            "#COMPONENT_CONTAINER",
+            # Common content selectors
+            ".post-content",
+            ".entry-content",
+            ".page-content",
+            ".site-content",
+            ".main-article",
+            ".article-body",
+            ".content-wrapper",
+            ".content-main",
+        ]
+        
+        for selector in main_selectors:
+            main = soup.select_one(selector)
+            if main:
+                text = main.get_text().strip()
+                if len(text) > 100:  # Only return if substantial
+                    return self._clean_text(text)
         
         # Try to find paragraph tags
         paragraphs = soup.find_all("p")
         if paragraphs:
-            text = "\n".join(p.get_text().strip() for p in paragraphs[:20])
+            text = "\n\n".join(p.get_text().strip() for p in paragraphs[:50])
             if len(text) > 100:
                 return self._clean_text(text)
+        
+        # Try headings and their following content
+        headings = soup.find_all(["h1", "h2", "h3", "h4", "h5", "h6"])
+        if headings:
+            parts = []
+            for heading in headings[:20]:
+                parts.append(heading.get_text().strip())
+                # Get next sibling text
+                next_node = heading.next_sibling
+                while next_node and next_node.name not in ["h1", "h2", "h3", "h4", "h5", "h6"]:
+                    if next_node.name == "p":
+                        parts.append(next_node.get_text().strip())
+                        break
+                    next_node = next_node.next_sibling
+            if parts:
+                return self._clean_text("\n\n".join(parts))
         
         return ""
 
     def _clean_text(self, text: str) -> str:
         """Clean extracted text."""
-        # Remove excessive whitespace
-        text = re.sub(r'\s+', ' ', text).strip()
-        # Remove non-printable characters
-        text = ''.join(char for char in text if char.isprintable() or char.isspace())
-        # Limit length
-        return text[:5000]
+        # Import clean_text from page_crawler to maintain consistency
+        from app.services.research.page_crawler import clean_text as pc_clean_text
+        return pc_clean_text(text)[:5000]
+
+    def _remove_site_builder_artifacts(self, soup: Any) -> None:
+        """Remove artifacts from site builders like Wix, Squarespace, etc.
+        
+        This removes elements commonly found in site-builder generated pages
+        that contain boilerplate, navigation, or non-content elements.
+        """
+        # Remove Wix-specific elements
+        for element in soup.find_all(class_=lambda x: x and ("wix" in x.lower() or "WIX" in x)):
+            element.decompose()
+        
+        # Remove Wix data elements
+        for element in soup.find_all(attrs={"data-testid": True}):
+            element.decompose()
+        
+        # Remove Squarespace-specific elements
+        for element in soup.find_all(class_=lambda x: x and ("sqs" in x.lower() or "squarespace" in x.lower())):
+            element.decompose()
+        
+        # Remove generic site builder header/footer elements
+        for element in soup.find_all(class_=lambda x: x and ("header" in x.lower() or "footer" in x.lower() or "navbar" in x.lower() or "navigation" in x.lower())):
+            element.decompose()
+        
+        # Remove social media and sharing widgets
+        for element in soup.find_all(class_=lambda x: x and ("social" in x.lower() or "share" in x.lower() or "widget" in x.lower())):
+            element.decompose()
+        
+        # Remove cookie banners and consent forms
+        for element in soup.find_all(class_=lambda x: x and ("cookie" in x.lower() or "consent" in x.lower() or "privacy" in x.lower() or "gdpr" in x.lower())):
+            element.decompose()
+        
+        # Remove modal and overlay elements
+        for element in soup.find_all(class_=lambda x: x and ("modal" in x.lower() or "overlay" in x.lower() or "popup" in x.lower() or "dialog" in x.lower())):
+            element.decompose()
+        
+        # Remove advertisement elements
+        for element in soup.find_all(class_=lambda x: x and ("ad" in x.lower() or "advert" in x.lower() or "banner" in x.lower() or "sponsored" in x.lower())):
+            element.decompose()
 
     def _is_url(self, query: str) -> bool:
         """Check if a query is a URL."""
