@@ -24,18 +24,6 @@
     "ingestion_status": "INGESTED"
   },
   {
-    "entity_id": "240",
-    "name": "Government of the Republic of Zambia",
-    "rita_type": "Government",
-    "aliases": [],
-    "metadata": {},
-    "source_ids": [],
-    "source_count": 0,
-    "extracted_at": "2026-08-17 01:15:22",
-    "extraction_run_id": "",
-    "ingestion_status": "INGESTED"
-  },
-  {
     "entity_id": "241",
     "name": "African Development Bank (AfDB)",
     "rita_type": "Organization",
@@ -128,6 +116,18 @@
     "source_ids": [],
     "source_count": 0,
     "extracted_at": "2026-08-18 00:23:15",
+    "extraction_run_id": "",
+    "ingestion_status": "INGESTED"
+  },
+  {
+    "entity_id": "777",
+    "name": "Theotectnic College",
+    "rita_type": "Educational Institution",
+    "aliases": [],
+    "metadata": {},
+    "source_ids": [],
+    "source_count": 0,
+    "extracted_at": "2026-08-17 01:15:23",
     "extraction_run_id": "",
     "ingestion_status": "INGESTED"
   }
