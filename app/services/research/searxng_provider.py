@@ -71,18 +71,18 @@ class SearXNGProvider(SearchProvider):
             local_port: Port for local SearXNG instance
         """
         # Determine if we should use local SearXNG
-        self.use_local = use_local if use_local is not None else getattr(config, 'SEARXNG_LOCAL_ENABLED', True)
+        self.use_local = use_local if use_local is not None else getattr(config, 'SEARXNG_LOCAL_ENABLED', False)
         self.local_port = local_port
         
         # Try to determine base_url in this order:
         # 1. Provided base_url
         # 2. SEARXNG_BASE_URL from config
-        # 3. Local SearXNG manager's base_url (if local is enabled and available)
+        # 3. Local SearXNG manager's base_url (only if local is enabled and available)
         # 4. Default external URL (fallback)
         
         self._external_base_url = base_url or getattr(config, 'SEARXNG_BASE_URL', None)
         
-        # Check if local SearXNG is available
+        # Check if local SearXNG is available (only if use_local is True)
         self._local_available = False
         self._base_url_from_manager: Optional[str] = None
         
@@ -93,13 +93,14 @@ class SearXNGProvider(SearchProvider):
                 self._local_available = True
         
         # Determine final base_url
+        # Priority: external URL > local manager URL > fallback
         if self._external_base_url:
             self.base_url = self._external_base_url
         elif self._base_url_from_manager:
             self.base_url = self._base_url_from_manager
         else:
-            # Fallback to default
-            self.base_url = "https://crispy-potato-vpr6pwwjrqxvfwx5p-8888.app.github.dev"
+            # Fallback to config default or hardcoded
+            self.base_url = getattr(config, 'SEARXNG_BASE_URL', "https://atis-searxng.onrender.com")
         
         # Ensure base_url doesn't have trailing slash
         self.base_url = self.base_url.rstrip("/")
@@ -155,24 +156,30 @@ class SearXNGProvider(SearchProvider):
         
         logger.info(f"[SEARXNG] Searching for '{cleaned_query[:100]}' (max_results={effective_max})")
         
-        # Get current base_url and try to determine if we should start local
+        # Get current base_url
+        # When use_local is False (default), we skip all local SearXNG management
+        # and use the external URL from config (SEARXNG_BASE_URL)
         current_base_url = self.base_url
-        manager = get_searxng_manager()
         
-        # Check if we need to start local SearXNG
+        # Only attempt local SearXNG if explicitly enabled
         local_started = False
-        if self.use_local and manager.enabled:
-            if not manager.is_running:
-                logger.info(f"[SEARXNG] Local SearXNG not running, attempting to start...")
-                if await manager.start():
-                    local_started = True
+        if self.use_local:
+            manager = get_searxng_manager()
+            if manager.enabled:
+                if not manager.is_running:
+                    logger.info(f"[SEARXNG] Local SearXNG not running, attempting to start...")
+                    if await manager.start():
+                        local_started = True
+                        current_base_url = manager.base_url
+                        logger.info(f"[SEARXNG] Local SearXNG started at {current_base_url}")
+                    else:
+                        logger.warning(f"[SEARXNG] Failed to start local SearXNG, using configured URL: {current_base_url}")
+                elif manager.is_running:
+                    # Use the manager's base_url if it's running
                     current_base_url = manager.base_url
-                    logger.info(f"[SEARXNG] Local SearXNG started at {current_base_url}")
-                else:
-                    logger.warning(f"[SEARXNG] Failed to start local SearXNG, using configured URL: {current_base_url}")
-            elif manager.is_running:
-                # Use the manager's base_url if it's running
-                current_base_url = manager.base_url
+        else:
+            # use_local is False - use external URL only, no local startup
+            logger.debug(f"[SEARXNG] Local SearXNG disabled, using external URL: {current_base_url}")
         
         try:
             # Build the search URL with proper URL encoding

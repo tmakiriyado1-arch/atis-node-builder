@@ -26,11 +26,11 @@ MAX_SOURCES_PER_QUERY = int(os.getenv("MAX_SOURCES_PER_QUERY", "10"))
 # SearXNG metasearch engine
 SEARXNG_BASE_URL = os.getenv(
     "SEARXNG_BASE_URL",
-    "https://crispy-potato-vpr6pwwjrqxvfwx5p-8888.app.github.dev",
+    "https://atis-searxng.onrender.com",
 )
 
 # Local SearXNG instance configuration
-SEARXNG_LOCAL_ENABLED = os.getenv("SEARXNG_LOCAL_ENABLED", "true").lower() == "true"
+SEARXNG_LOCAL_ENABLED = os.getenv("SEARXNG_LOCAL_ENABLED", "false").lower() == "true"
 SEARXNG_LOCAL_PORT = int(os.getenv("SEARXNG_LOCAL_PORT", "8888"))
 SEARXNG_LOCAL_HOST = os.getenv("SEARXNG_LOCAL_HOST", "127.0.0.1")
 SEARXNG_REPO_PATH = os.getenv("SEARXNG_REPO_PATH", "/workspace/github__tmakiriyado1-arch__atis-searxng")
