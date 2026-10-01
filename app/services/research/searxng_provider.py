@@ -101,8 +101,8 @@ class SearXNGProvider(SearchProvider):
             self.base_url = self._base_url_from_manager
         else:
             # Fallback to config default or hardcoded
-        # atis-searxng.onrender.com is the primary remote SearXNG instance
-        self.base_url = getattr(config, 'SEARXNG_BASE_URL', "https://atis-searxng.onrender.com")
+            # atis-searxng.onrender.com is the primary remote SearXNG instance
+            self.base_url = getattr(config, 'SEARXNG_BASE_URL', "https://atis-searxng.onrender.com")
         
         # Ensure base_url doesn't have trailing slash
         self.base_url = self.base_url.rstrip("/")
