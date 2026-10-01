@@ -19,6 +19,7 @@ The provider handles:
     - Empty result sets
     - Result normalization to SearchResult format
     - Local SearXNG instance management with fallback to external URL
+    - Automatic warm-up of remote SearXNG instances to avoid cold start delays
 """
 from __future__ import annotations
 
@@ -263,6 +264,34 @@ class SearXNGProvider(SearchProvider):
                 await manager.stop()
             return []
 
+    async def warm_up(self) -> bool:
+        """Warm up the SearXNG instance by making a test request.
+        
+        This is especially important for Render's free tier which has
+        cold start delays of 30-60+ seconds. By pinging the health endpoint
+        during pipeline initialization, we ensure the service is ready
+        before actual search requests are made.
+        
+        Returns:
+            True if warm-up succeeded, False otherwise (non-blocking)
+        """
+        try:
+            async with httpx.AsyncClient(
+                headers=self.headers,
+                timeout=30.0,  # Longer timeout for cold start
+            ) as client:
+                test_url = f"{self.base_url}/healthz"
+                response = await client.get(test_url, timeout=30.0)
+                logger.info(f"[SEARXNG] Warm-up successful for {self.base_url}")
+                return response.status_code == 200
+        except httpx.TimeoutException:
+            # Cold start taking longer than expected - that's ok
+            logger.info(f"[SEARXNG] Warm-up timed out for {self.base_url} (cold start in progress)")
+            return False
+        except Exception as e:
+            logger.warning(f"[SEARXNG] Warm-up failed for {self.base_url}: {type(e).__name__}: {e}")
+            return False
+
     def _parse_searxng_response(
         self,
         data: Any,
@@ -382,3 +411,29 @@ class SearXNGProvider(SearchProvider):
             results.append(result)
         
         return results
+
+
+# Warm-up remote SearXNG on module import to avoid cold start delays
+async def _warm_up_remote_searxng():
+    """Warm up remote SearXNG on module import to avoid cold start delays.
+    
+    This function is called automatically when searxng_provider is imported,
+    ensuring that the remote SearXNG instance (atis-searxng.onrender.com) is
+    warmed up before any actual search requests are made. This is especially
+    important for Render's free tier which has cold start delays of 30-60+ seconds.
+    """
+    from app import config
+    
+    # Only warm up remote instances, not local
+    base_url = getattr(config, 'SEARXNG_BASE_URL', "https://atis-searxng.onrender.com")
+    if base_url and not base_url.startswith('127.0.0.1') and not base_url.startswith('localhost'):
+        try:
+            provider = SearXNGProvider()
+            # Fire and forget - don't block on warm-up
+            asyncio.create_task(provider.warm_up())
+        except Exception as e:
+            logger.warning(f"[SEARXNG] Failed to initialize warm-up: {e}")
+
+
+# Trigger warm-up when module is imported
+asyncio.create_task(_warm_up_remote_searxng())
