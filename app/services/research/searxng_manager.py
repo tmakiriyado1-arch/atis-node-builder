@@ -66,7 +66,8 @@ class SearXNGManager:
             health_check_interval: Interval between health checks
         """
         # Configuration from environment or defaults
-        self.enabled = enabled and getattr(config, 'SEARXNG_LOCAL_ENABLED', True)
+        # Default to False to avoid confusion with atis-searxng.onrender.com
+        self.enabled = enabled and getattr(config, 'SEARXNG_LOCAL_ENABLED', False)
         self.host = host
         self.port = int(os.getenv('SEARXNG_LOCAL_PORT', str(port)))
         self.startup_timeout = startup_timeout

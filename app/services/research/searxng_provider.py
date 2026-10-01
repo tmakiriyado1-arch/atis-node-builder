@@ -71,6 +71,7 @@ class SearXNGProvider(SearchProvider):
             local_port: Port for local SearXNG instance
         """
         # Determine if we should use local SearXNG
+        # Default to False to use atis-searxng.onrender.com (the remote instance)
         self.use_local = use_local if use_local is not None else getattr(config, 'SEARXNG_LOCAL_ENABLED', False)
         self.local_port = local_port
         
@@ -100,7 +101,8 @@ class SearXNGProvider(SearchProvider):
             self.base_url = self._base_url_from_manager
         else:
             # Fallback to config default or hardcoded
-            self.base_url = getattr(config, 'SEARXNG_BASE_URL', "https://atis-searxng.onrender.com")
+        # atis-searxng.onrender.com is the primary remote SearXNG instance
+        self.base_url = getattr(config, 'SEARXNG_BASE_URL', "https://atis-searxng.onrender.com")
         
         # Ensure base_url doesn't have trailing slash
         self.base_url = self.base_url.rstrip("/")
