@@ -417,7 +417,9 @@ class PageCrawler:
             
         except Exception as e:
             logger.error(f"[PAGE_CRAWLER] Failed to parse HTML from {url}: {e}")
-            return url, html[:1000], html  # Return raw content as fallback
+            # Even in fallback, clean the HTML
+            fallback_content = clean_text(html[:1000])
+            return url, fallback_content, html  # Return cleaned fallback content
 
     def _extract_main_content(self, soup: Any) -> str:
         """Extract main content from BeautifulSoup object.
