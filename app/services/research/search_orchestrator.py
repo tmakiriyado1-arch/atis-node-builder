@@ -19,6 +19,7 @@ from app.services.research.llm_ranking import LLMRanker, RankedResult, RankingRe
 from app.services.research.page_crawler import CrawlResult, CrawlStats, PageCrawler
 from app.services.research.query_variation import QueryVariation, QueryVariationGenerator, QueryVariationConfig
 from app.services.research.search_provider import ProviderRole, SearchProvider, SearchResult
+from app.services.research.relevance_filter import RelevanceFilter, RelevanceFilterResult
 from app.logging import logger
 
 
@@ -132,6 +133,8 @@ class SearchOrchestrator:
         query_variation_config: Optional[QueryVariationConfig] = None,
         use_llm_ranking: bool = True,
         llm_ranker: Optional[LLMRanker] = None,
+        use_relevance_filtering: bool = True,
+        relevance_filter: Optional[RelevanceFilter] = None,
     ):
         """Initialize orchestrator with a list of providers.
         
@@ -169,6 +172,9 @@ class SearchOrchestrator:
         self.use_llm_ranking = use_llm_ranking
         self.llm_ranker = llm_ranker or LLMRanker() if use_llm_ranking else None
         self._llm_ranking_result: Optional[RankingResult] = None
+        self.use_relevance_filtering = use_relevance_filtering
+        self.relevance_filter = relevance_filter or RelevanceFilter() if use_relevance_filtering else None
+        self._relevance_filter_result: Optional[RelevanceFilterResult] = None
 
     def add_provider(self, provider: SearchProvider) -> None:
         """Add a search provider to the orchestrator."""
@@ -450,6 +456,31 @@ class SearchOrchestrator:
         
         # Phase 5: Deduplicate evidence by URL
         final_evidence = deduplicate_evidence(all_evidence)
+        
+        # Phase 5a: Relevance filtering (if enabled)
+        # Filter out irrelevant evidence using LLM
+        if self.use_relevance_filtering and self.relevance_filter and final_evidence:
+            logger.info(f"[ORCHESTRATOR] Filtering {len(final_evidence)} evidence items for relevance to '{query[:50]}'")
+            try:
+                relevance_result = await self.relevance_filter.filter(
+                    query,
+                    final_evidence,
+                )
+                self._relevance_filter_result = relevance_result
+                
+                # Use only relevant evidence for downstream processing
+                final_evidence = relevance_result.relevant_evidence
+                
+                logger.info(f"[ORCHESTRATOR] Relevance filtering: kept {len(final_evidence)}/{len(relevance_result.relevant_evidence) + len(relevance_result.irrelevant_evidence)} evidence items")
+                
+                # Log filtered out items
+                for result in relevance_result.results:
+                    if not result.relevant:
+                        logger.info(f"[ORCHESTRATOR] Filtered out: {result.url[:80]} - {result.reason}")
+                        
+            except Exception as e:
+                logger.warning(f"[ORCHESTRATOR] Relevance filtering failed: {e}, continuing with all evidence")
+                self._relevance_filter_result = None
         
         # Phase 5b: LLM-based ranking of evidence (if enabled)
         # Extract query variations as strings for ranking

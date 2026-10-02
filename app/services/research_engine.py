@@ -382,14 +382,14 @@ class ResearchEngine:
         from copy import copy as copy_func
         evidence_for_enrichment = []
         for ev in deduped_evidence:
-            # Use full content if available, otherwise use snippet
-            if hasattr(ev, 'content') and ev.content:
-                # Create a copy with full content preserved
-                ev_copy = copy_func(ev)
-                ev_copy.snippet = ev.content
-                evidence_for_enrichment.append(ev_copy)
-            else:
-                evidence_for_enrichment.append(ev)
+            # Use normalized_text if available (authoritative semantic text),
+            # otherwise full content, otherwise snippet
+            text = getattr(ev, 'normalized_text', None) or \
+                  getattr(ev, 'content', None) or ev.snippet or ""
+            # Create a copy with the authoritative text preserved
+            ev_copy = copy_func(ev)
+            ev_copy.snippet = text
+            evidence_for_enrichment.append(ev_copy)
         
         # PHASE 19: Check if we have enough evidence to proceed
         # Don't fail execution based on research quality - the pipeline will check research_status
@@ -412,8 +412,10 @@ class ResearchEngine:
             logger.info(f"[ENRICH {cleaned_name}] Fallback generated {len(deduped_evidence)} claims from {len(deduped_evidence)} evidence items")
             for evidence in deduped_evidence:
                 field_name = (fields_to_research or ["entity_profile"])[0]
-                # Use full content if available, otherwise use snippet
-                content = getattr(evidence, 'content', None) or evidence.snippet or ""
+                # Use normalized_text if available (authoritative semantic text),
+                # otherwise full content, otherwise snippet
+                content = getattr(evidence, 'normalized_text', None) or \
+                          getattr(evidence, 'content', None) or evidence.snippet or ""
                 claims.append(
                     ResearchClaim(
                         claim=content,

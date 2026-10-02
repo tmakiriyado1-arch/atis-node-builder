@@ -59,8 +59,10 @@ def _create_evidence_chunks(
         if not record or not record.url:
             continue
         
-        # Use full content if available, otherwise fall back to snippet
-        content = getattr(record, 'content', None) or record.snippet or ""
+        # Use normalized_text if available (authoritative semantic text),
+        # otherwise full content, otherwise snippet
+        content = getattr(record, 'normalized_text', None) or \
+                  getattr(record, 'content', None) or record.snippet or ""
         
         # Skip if content is empty or evidence is unusable
         if not content.strip():
@@ -101,7 +103,10 @@ def _create_evidence_chunks(
             })
             
             # Move to next chunk with overlap
-            start = end - overlap if end > overlap else end
+            # Ensure we always advance to avoid infinite loops
+            if end >= len(content):
+                break
+            start = end - overlap
             chunk_index += 1
     
     return chunks
@@ -272,13 +277,17 @@ Ontology Rules:
 
         first_url = valid_urls[0]
         source_record = url_map.get(first_url)
+        # Use normalized_text if available, otherwise content, otherwise snippet
+        evidence_text = getattr(source_record, 'normalized_text', None) or \
+                        getattr(source_record, 'content', None) or \
+                        (source_record.snippet if source_record else "")
         accepted.append(
             ResearchClaim(
                 claim=claim_text,
                 field_name="candidate_claim",
                 source_url=first_url,
                 source_title=source_record.title if source_record else None,
-                evidence_passage=source_record.snippet if source_record else "",
+                evidence_passage=evidence_text,
                 source_type="webpage",
                 confidence=0.0,
                 extraction_method="mistral",
