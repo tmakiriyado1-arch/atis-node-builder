@@ -163,17 +163,19 @@ class CanonicalNodeRow(BaseModel):
     @field_validator("summary")
     @classmethod
     def validate_summary(cls, value: str, info: Any) -> str:
+        """
+        Validate structural requirements for summary.
+        
+        Note: Entity reference validation is handled in CanonicalNodeRowBuilder
+        where aliases are available. This validator only checks structural invariants.
+        """
         cleaned = (value or "").strip()
         if not cleaned:
             raise ValueError("summary is required")
 
-        entity = (info.data.get("entity") if isinstance(info.data, dict) else "") or ""
-        entity_name = str(entity).strip()
-        if entity_name and entity_name.lower() not in cleaned.lower():
-            raise ValueError("summary must contain the subject")
-
+        # Structural validation: must have a verb that explains function
         if not re.search(
-            r"\b(is|regulates|manages|oversees|operates|functions|responsible|supports|coordinates|monitors|provides|governs|requires|controls|maintains|administers|helps|delivers|develops|handles|established|founded|created|promotes|works|active|based|located|that)\b",
+            r"\b(is|are|was|were|regulates|manages|oversees|operates|functions|responsible|supports|coordinates|monitors|provides|governs|requires|controls|maintains|administers|helps|delivers|develops|handles|established|founded|created|promotes|works|active|based|located|that)\b",
             cleaned,
             flags=re.IGNORECASE,
         ):

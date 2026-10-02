@@ -146,6 +146,66 @@ class EvidenceRecord:
     http_status: Optional[int] = None
     content_type: str = ""
     final_url: Optional[str] = None
+    # NEW: Authoritative semantic text (extraction boundary)
+    normalized_text: str = ""
+    raw_content_ref: Optional[str] = None  # Reference to stored raw content
+    # For observability
+    raw_length: int = 0
+    normalized_length: int = 0
+
+    @classmethod
+    def from_crawl(
+        cls,
+        url: str,
+        title: str,
+        raw_content: str,
+        declared_content_type: Optional[str] = None,
+        raw_store: Optional[Callable[[str], str]] = None,
+    ) -> "EvidenceRecord":
+        """
+        Create evidence from raw crawl with extraction.
+
+        Contract: normalized_text is ALWAYS semantic text, never raw HTML.
+        content_type is the EFFECTIVE type used for extraction.
+
+        raw_store: Optional callable to persist raw content, returns reference ID.
+                  If None, raw_content is not stored.
+        """
+        from app.services.text.extractor import (
+            extract_text,
+            detect_content_type,
+            TextExtractionError,
+        )
+        import logging
+        
+        logger = logging.getLogger(__name__)
+
+        # Determine effective content type
+        effective_ct = detect_content_type(raw_content, declared_content_type)
+
+        # Extract - will raise TextExtractionError on failure
+        try:
+            normalized = extract_text(raw_content, effective_ct)
+        except TextExtractionError:
+            # Log and re-raise - do NOT return contaminated evidence
+            logger.exception(f"Evidence creation failed for {url}: text extraction failed")
+            raise
+
+        # Store raw if storage provided
+        raw_ref = None
+        if raw_store:
+            raw_ref = raw_store(raw_content)
+
+        return cls(
+            url=url,
+            title=title,
+            snippet=normalized,  # Backward compatibility
+            normalized_text=normalized,
+            raw_content_ref=raw_ref,
+            raw_length=len(raw_content),
+            normalized_length=len(normalized),
+            content_type=effective_ct,  # Store EFFECTIVE type
+        )
 
 
 def normalize_url(raw_url: Any) -> str:

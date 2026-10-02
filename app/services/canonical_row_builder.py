@@ -50,19 +50,45 @@ class CanonicalNodeRowBuilder:
             ("part_of", r"part of\s+(?:the\s+)?(.+?)(?:\.|$)"),
         ]
 
+    def _summary_references_entity(self, summary: str, entity_name: str, aliases: List[str]) -> bool:
+        """
+        Check if summary references the entity or any of its aliases.
+
+        Uses word-boundary matching. This is the SINGLE source of truth
+        for entity reference validation.
+        """
+        import re
+
+        if not summary or not entity_name:
+            return False
+
+        normalized_summary = summary.lower()
+        # Include both canonical name and aliases
+        targets = [entity_name.lower()] + [a.lower() for a in aliases if a]
+
+        for target in targets:
+            if re.search(rf'\b{re.escape(target)}\b', normalized_summary):
+                return True
+
+        return False
+
     def build(self, node_draft: NodeDraft) -> CanonicalNodeRow:
         if node_draft is None:
             raise ValueError("node_draft is required")
 
         # Get entity from frontmatter or title
-        entity = (node_draft.frontmatter.get("entity") or node_draft.title or "").strip()
+        frontmatter = node_draft.frontmatter or {}
+        entity = (frontmatter.get("entity") or node_draft.title or "").strip()
         if not entity:
             raise ValueError("node draft must include an entity name")
         
         # Preserve canonical name if available
-        canonical_name = node_draft.frontmatter.get("canonical_name")
+        canonical_name = frontmatter.get("canonical_name")
         if canonical_name and canonical_name.strip():
             entity = canonical_name.strip()
+        
+        # Get aliases from frontmatter
+        aliases = frontmatter.get("aliases", []) if isinstance(frontmatter, dict) else []
         
         claims = list(node_draft.source_claims or [])
         if not claims:
@@ -70,6 +96,13 @@ class CanonicalNodeRowBuilder:
 
         # Extract summary from NodeDraft body or build from claims
         summary = self._extract_summary_from_draft(node_draft, entity, claims)
+        
+        # Validate summary references entity or alias - SINGLE validation point
+        if not self._summary_references_entity(summary, entity, aliases):
+            raise ValueError(
+                f"summary must reference entity '{entity}' or one of its aliases: {aliases}. "
+                f"Got summary: {summary[:100]}..."
+            )
         
         # Extract relationships and associations from frontmatter or claims
         relationships = self._extract_relationships_from_frontmatter(node_draft)
@@ -123,9 +156,6 @@ class CanonicalNodeRowBuilder:
         """Extract summary from NodeDraft body, preferring explicit Summary section."""
         body = node_draft.body or ""
         
-        # Clean HTML from body to prevent validation errors
-        body = self._clean_html_from_text(body)
-        
         # Try to extract from body Summary section
         if "## Summary" in body:
             lines = body.split("\n")
@@ -170,6 +200,7 @@ class CanonicalNodeRowBuilder:
         return cleaned or "entity"
 
     def _extract_aliases(self, node_draft: NodeDraft, claims: Sequence[ResearchClaim]) -> List[str]:
+        """Extract aliases from frontmatter and claims."""
         aliases = []
         frontmatter = node_draft.frontmatter or {}
         
@@ -190,8 +221,6 @@ class CanonicalNodeRowBuilder:
             if not isinstance(claim, ResearchClaim):
                 continue
             text = (claim.claim or "").strip()
-            # Clean HTML from claim text to prevent validation errors
-            text = self._clean_html_from_text(text)
             if not text:
                 continue
             # Look for parentheses (acronyms)
@@ -221,22 +250,19 @@ class CanonicalNodeRowBuilder:
         sources = []
         frontmatter_sources = node_draft.frontmatter.get("sources") if isinstance(node_draft.frontmatter, dict) else []
         if isinstance(frontmatter_sources, list):
-            # Clean HTML from source URLs
-            sources.extend(self._clean_html_from_text(str(item)).strip() for item in frontmatter_sources if str(item).strip())
+            sources.extend(str(item).strip() for item in frontmatter_sources if str(item).strip())
         
         # Also extract from claims
         for claim in claims:
             if hasattr(claim, "source_url"):
                 url = (claim.source_url or "").strip()
-                # Clean HTML from URL
-                url = self._clean_html_from_text(url)
                 if url and url not in sources:
                     sources.append(url)
             if hasattr(claim, "evidence_urls"):
                 urls = claim.evidence_urls
                 if isinstance(urls, list):
                     for url in urls:
-                        url = self._clean_html_from_text(str(url)).strip()
+                        url = str(url).strip()
                         if url and url not in sources:
                             sources.append(url)
         
@@ -253,8 +279,6 @@ class CanonicalNodeRowBuilder:
         lines: List[str] = []
         for claim in claims:
             text = (getattr(claim, "claim", "") or "").strip()
-            # Clean HTML from claim text to prevent validation errors
-            text = self._clean_html_from_text(text)
             if not text:
                 continue
             relationship = self._serialize_relationship(text)
@@ -266,26 +290,12 @@ class CanonicalNodeRowBuilder:
         lines: List[str] = []
         for claim in claims:
             text = (getattr(claim, "claim", "") or "").strip()
-            # Clean HTML from claim text to prevent validation errors
-            text = self._clean_html_from_text(text)
             if not text:
                 continue
             association = self._serialize_association(text)
             if association and association not in lines:
                 lines.append(association)
         return lines
-
-    def _clean_html_from_text(self, text: str) -> str:
-        """Remove HTML tags and entities from text, returning clean plain text."""
-        if not text:
-            return ""
-        # Remove HTML tags
-        cleaned = re.sub(r'<[^>]+>', ' ', text)
-        # Remove HTML entities (numeric and named)
-        cleaned = re.sub(r'&[a-zA-Z0-9#]+;', ' ', cleaned)
-        # Remove excessive whitespace
-        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
-        return cleaned
 
     def _build_summary(self, entity: str, claims: Sequence[ResearchClaim]) -> str:
         """Build a comprehensive summary from entity and claims.
@@ -299,8 +309,6 @@ class CanonicalNodeRowBuilder:
         
         for claim in claims:
             text = (getattr(claim, "claim", "") or "").strip()
-            # Clean HTML from claim text to prevent validation errors
-            text = self._clean_html_from_text(text)
             if text and len(text) > best_length:
                 best_claim = text
                 best_length = len(text)
@@ -326,8 +334,8 @@ class CanonicalNodeRowBuilder:
                 cleaned = f"{cleaned} It functions within its established framework."
             return cleaned
         
-        # Fallback
-        return f"[[{entity}]] is a traceable entity described in source-backed evidence."
+        # Fallback - return empty string, let validator catch it
+        return ""
 
     def _extract_entity_type_from_body(self, body: str) -> Optional[str]:
         """Extract entity type from body text."""

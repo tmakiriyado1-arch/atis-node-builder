@@ -100,9 +100,6 @@ class NodeDraftBuilder:
             if classification.category == "METADATA":
                 field = classification.metadata_field
                 value = classification.target or classification.raw_claim
-                # Clean HTML from metadata values to prevent validation errors
-                if isinstance(value, str):
-                    value = self._clean_html_from_text(value)
                 
                 if field and value:
                     if field == "entity_type":
@@ -149,19 +146,13 @@ class NodeDraftBuilder:
             if classification.category == "RELATIONSHIP":
                 rendered = self._format_route(classification)
                 if rendered and rendered not in seen_relationships:
-                    # Clean HTML from relationship entries
-                    cleaned = self._clean_html_from_text(rendered)
-                    if cleaned:
-                        seen_relationships.add(cleaned)
-                        relationship_entries.append(cleaned)
+                    seen_relationships.add(rendered)
+                    relationship_entries.append(rendered)
             elif classification.category == "ASSOCIATION":
                 rendered = self._format_route(classification)
                 if rendered and rendered not in seen_associations:
-                    # Clean HTML from association entries
-                    cleaned = self._clean_html_from_text(rendered)
-                    if cleaned:
-                        seen_associations.add(cleaned)
-                        association_entries.append(cleaned)
+                    seen_associations.add(rendered)
+                    association_entries.append(rendered)
         
         # Extract summary parts
         summary_parts: List[str] = []
@@ -172,8 +163,7 @@ class NodeDraftBuilder:
             claim_text = classification.raw_claim or self._claim_text(claim)
             
             if classification.category == "SUMMARY":
-                # Clean HTML from summary parts to prevent validation errors
-                explicit_summary_parts.append(self._clean_html_from_text(claim_text))
+                explicit_summary_parts.append(claim_text)
         
         # Build comprehensive summary
         if explicit_summary_parts:
@@ -182,8 +172,7 @@ class NodeDraftBuilder:
             # Build summary from all claims
             summary_sentence = self._build_summary_sentence(title, entity_type, country, sector, valid_claims)
             if summary_sentence:
-                # Clean HTML from summary sentence to prevent validation errors
-                summary_parts = [self._clean_html_from_text(summary_sentence)]
+                summary_parts = [summary_sentence]
         
         # Build body
         body_lines: List[str] = []
@@ -281,24 +270,10 @@ class NodeDraftBuilder:
             return ""
         return sentence
 
-    def _clean_html_from_text(self, text: str) -> str:
-        """Remove HTML tags and entities from text, returning clean plain text."""
-        if not text:
-            return ""
-        # Remove HTML tags
-        cleaned = re.sub(r'<[^>]+>', ' ', text)
-        # Remove HTML entities (numeric and named)
-        cleaned = re.sub(r'&[a-zA-Z0-9#]+;', ' ', cleaned)
-        # Remove excessive whitespace
-        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
-        return cleaned
-
     def _claim_text(self, claim: ResearchClaim) -> str:
         if isinstance(claim, dict):
             return str((claim.get("claim_text") or claim.get("claim") or "")).strip()
-        text = str(getattr(claim, "claim_text", getattr(claim, "claim", "") or "")).strip()
-        # Clean HTML from claim text to prevent validation errors
-        return self._clean_html_from_text(text)
+        return str(getattr(claim, "claim_text", getattr(claim, "claim", "") or "")).strip()
 
     def _extract_alias(self, text: str, entity_name: str) -> Optional[str]:
         """Extract potential aliases from claim text."""
