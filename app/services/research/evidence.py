@@ -153,6 +153,19 @@ class EvidenceRecord:
     raw_length: int = 0
     normalized_length: int = 0
 
+    def __post_init__(self):
+        """Ensure normalized_text is always populated by extracting from snippet if needed."""
+        if not self.normalized_text and self.snippet:
+            from app.services.text.extractor import extract_text, detect_content_type
+            effective_ct = detect_content_type(self.snippet, self.content_type)
+            if effective_ct == "text/html":
+                self.normalized_text = extract_text(self.snippet, effective_ct)
+            else:
+                self.normalized_text = self.snippet
+        # Update normalized_length if not set
+        if self.normalized_length == 0 and self.normalized_text:
+            self.normalized_length = len(self.normalized_text)
+
     @classmethod
     def from_crawl(
         cls,

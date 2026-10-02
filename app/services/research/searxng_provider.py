@@ -435,5 +435,12 @@ async def _warm_up_remote_searxng():
             logger.warning(f"[SEARXNG] Failed to initialize warm-up: {e}")
 
 
-# Trigger warm-up when module is imported
-asyncio.create_task(_warm_up_remote_searxng())
+# Trigger warm-up when module is imported (lazy to avoid async issues)
+def _trigger_warmup():
+    try:
+        asyncio.create_task(_warm_up_remote_searxng())
+    except RuntimeError:
+        # No running event loop - skip warmup on import
+        pass
+
+_trigger_warmup()

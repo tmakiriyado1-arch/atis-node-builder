@@ -300,7 +300,10 @@ class EntityPipelineService:
         claims = []
         for idx, evidence_item in enumerate(evidence):
             # Use normalized_text - this is the authoritative semantic text
-            text = getattr(evidence_item, "normalized_text", None) or getattr(evidence_item, "snippet", None) or ""
+            # If normalized_text is empty string, still use it (don't fall back to snippet which may be HTML)
+            text = getattr(evidence_item, "normalized_text", None)
+            if text is None:
+                text = getattr(evidence_item, "snippet", None) or ""
             url = getattr(evidence_item, "url", None) or ""
             title = getattr(evidence_item, "title", None) or ""
             pipeline_logger.info(f"[ENRICH {entity_name}] Evidence #{idx}: text_len={len(text)} url={url[:50] if url else 'None'} title={title[:50] if title else 'None'}")
