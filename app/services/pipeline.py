@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable, List, Optional, Sequence
 
@@ -262,6 +263,18 @@ class EntityPipelineService:
     def run_batch_sync(self, entities: Sequence[RITAEntity | str]) -> list[PipelineResult]:
         return asyncio.run(self.run_batch(entities))
 
+    def _clean_html_from_text(self, text: str) -> str:
+        """Remove HTML tags and entities from text, returning clean plain text."""
+        if not text:
+            return ""
+        # Remove HTML tags
+        cleaned = re.sub(r'<[^>]+>', ' ', text)
+        # Remove HTML entities (numeric and named)
+        cleaned = re.sub(r'&[a-zA-Z0-9#]+;', ' ', cleaned)
+        # Remove excessive whitespace
+        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+        return cleaned
+
     async def _enrich_entity(self, entity_name: str, evidence: Sequence[EvidenceRecord], entity: Optional[RITAEntity] = None) -> List[ResearchClaim]:
         from app.logging import logger as pipeline_logger
         
@@ -297,17 +310,20 @@ class EntityPipelineService:
         
         # Fallback: use evidence snippets as claims when no LLM is available
         # IMPORTANT: Ensure ALL evidence URLs are preserved in claims
+        # Clean HTML from snippets to prevent validation errors
         claims = []
         for idx, evidence_item in enumerate(evidence):
             snippet = getattr(evidence_item, "snippet", None) or ""
             url = getattr(evidence_item, "url", None) or ""
             title = getattr(evidence_item, "title", None) or ""
+            # Clean HTML tags and entities from snippet to prevent validation errors
+            cleaned_snippet = self._clean_html_from_text(snippet)
             pipeline_logger.info(f"[ENRICH {entity_name}] Evidence #{idx}: snippet_len={len(snippet)} url={url[:50] if url else 'None'} title={title[:50] if title else 'None'}")
-            if snippet:
+            if cleaned_snippet:
                 # Create claim with evidence_urls list containing this URL
                 claims.append(
                     ResearchClaim(
-                        claim=snippet,
+                        claim=cleaned_snippet,
                         field_name="entity_profile",
                         source_url=url,
                         source_title=title,
@@ -318,6 +334,23 @@ class EntityPipelineService:
                         evidence_urls=[url] if url else [],
                     )
                 )
+            elif snippet:
+                # If cleaning removed everything but original had content, use cleaned version
+                cleaned_fallback = self._clean_html_from_text(snippet)
+                if cleaned_fallback:
+                    claims.append(
+                        ResearchClaim(
+                            claim=cleaned_fallback,
+                            field_name="entity_profile",
+                            source_url=url,
+                            source_title=title,
+                            evidence_passage=snippet,
+                            source_type="webpage",
+                            confidence=0.0,
+                            extraction_method="search_result",
+                            evidence_urls=[url] if url else [],
+                        )
+                    )
             else:
                 # Even if snippet is empty, create a claim to preserve the URL
                 pipeline_logger.info(f"[ENRICH {entity_name}] Evidence #{idx}: empty snippet but preserving URL: {url}")
