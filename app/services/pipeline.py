@@ -58,7 +58,7 @@ class EntityPipelineService:
         
         self.registry = registry or EntityRegistry()
         self.resolver = resolver or EntityResolver(self.registry)
-        self.search_provider = search_provider or WebSearchProvider()
+        self.search_provider = search_provider or AppsScriptSearchProvider()
         self.llm_provider = llm_provider or type('LLMProvider', (), {'api_key': config.MISTRAL_API_KEY, 'model': config.MISTRAL_MODEL})()
         
         # Create orchestrator with multiple providers if not provided
