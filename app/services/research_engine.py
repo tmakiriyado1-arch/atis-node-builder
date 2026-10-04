@@ -11,12 +11,7 @@ from app.services.research.evidence import EvidenceRecord, deduplicate_evidence,
 from app.services.research.mistral_enrichment import enrich_evidence_with_mistral
 from app.services.research.search_orchestrator import ResearchStatus, SearchOrchestrator
 from app.services.research.search_provider import SearchProvider
-from app.services.research.web_search import WebSearchProvider
-from app.services.research.wikipedia_provider import WikipediaProvider
-from app.services.research.wikidata_provider import WikidataProvider
-from app.services.research.gdelt_provider import GDELTProvider
-from app.services.research.direct_site_crawler import DirectSiteCrawler
-from app.services.research.commoncrawl_provider import CommonCrawlProvider
+from app.services.research.apps_script_provider import AppsScriptSearchProvider
 
 
 @dataclass
@@ -198,36 +193,12 @@ class ResearchEngine:
         followed by Mozilla as secondary, then Wikipedia and Wikidata for
         authoritative data.
         """
-        from app.services.research.mozilla_provider import MozillaProvider
-        from app.services.research.searxng_provider import SearXNGProvider
+        from app.services.research.apps_script_provider import AppsScriptSearchProvider
         
         providers = []
         
-        # Lead with SearXNG as primary search provider (metasearch engine)
-        # This aggregates results from multiple search engines (Wikipedia, Brave, Google CSE, Wikidata)
-        providers.append(SearXNGProvider())
-        
-        # Add Mozilla as secondary search provider
-        providers.append(MozillaProvider())
-        
-        # Add DuckDuckGo as tertiary search provider
-        ddg_provider = fallback_provider or WebSearchProvider()
-        providers.append(ddg_provider)
-        
-        # Add Wikipedia provider (deterministic fallback)
-        providers.append(WikipediaProvider())
-        
-        # Add Wikidata provider (identity resolution)
-        providers.append(WikidataProvider())
-        
-        # Add GDELT provider (news/document coverage)
-        providers.append(GDELTProvider())
-        
-        # Add Direct Site Crawler (official sources)
-        providers.append(DirectSiteCrawler())
-        
-        # Add Common Crawl provider (deep fallback)
-        providers.append(CommonCrawlProvider())
+        # Use Apps Script as the only search provider
+        providers.append(fallback_provider or AppsScriptSearchProvider())
         
         return SearchOrchestrator(
             providers=providers,

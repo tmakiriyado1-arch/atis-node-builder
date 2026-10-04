@@ -23,17 +23,11 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 SEARCH_TIMEOUT = int(os.getenv("SEARCH_TIMEOUT", "30"))
 MAX_SOURCES_PER_QUERY = int(os.getenv("MAX_SOURCES_PER_QUERY", "10"))
 
-# SearXNG metasearch engine
-SEARXNG_BASE_URL = os.getenv(
-    "SEARXNG_BASE_URL",
-    "https://atis-searxng.onrender.com",
+# Google Apps Script Search Gateway
+APPS_SCRIPT_SEARCH_URL = os.getenv(
+    "APPS_SCRIPT_SEARCH_URL",
+    "",
 )
-
-# Local SearXNG instance configuration
-SEARXNG_LOCAL_ENABLED = os.getenv("SEARXNG_LOCAL_ENABLED", "false").lower() == "true"
-SEARXNG_LOCAL_PORT = int(os.getenv("SEARXNG_LOCAL_PORT", "8888"))
-SEARXNG_LOCAL_HOST = os.getenv("SEARXNG_LOCAL_HOST", "127.0.0.1")
-SEARXNG_REPO_PATH = os.getenv("SEARXNG_REPO_PATH", "/workspace/github__tmakiriyado1-arch__atis-searxng")
 
 # Google Sheets (read-only ENTITY_RAW intake)
 GOOGLE_AUTH_MODE = os.getenv("GOOGLE_AUTH_MODE", "WORKLOAD_IDENTITY_FEDERATION").upper()

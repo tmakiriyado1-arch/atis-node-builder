@@ -53,15 +53,8 @@ class EntityPipelineService:
         orchestrator: Optional[Any] = None,
     ) -> None:
         from app import config
-        from app.services.research.web_search import WebSearchProvider
         from app.services.research.search_orchestrator import SearchOrchestrator
-        from app.services.research.wikipedia_provider import WikipediaProvider
-        from app.services.research.wikidata_provider import WikidataProvider
-        from app.services.research.gdelt_provider import GDELTProvider
-        from app.services.research.direct_site_crawler import DirectSiteCrawler
-        from app.services.research.commoncrawl_provider import CommonCrawlProvider
-        from app.services.research.mozilla_provider import MozillaProvider
-        from app.services.research.searxng_provider import SearXNGProvider
+        from app.services.research.apps_script_provider import AppsScriptSearchProvider
         
         self.registry = registry or EntityRegistry()
         self.resolver = resolver or EntityResolver(self.registry)
@@ -82,27 +75,16 @@ class EntityPipelineService:
             # This avoids the orchestrator trying to crawl fake URLs
             self.orchestrator = None
         else:
-            # Lead with SearXNG as primary search provider (metasearch engine)
-            # This aggregates results from Wikipedia, Brave, Google CSE, Wikidata
-            # Mozilla as secondary, DuckDuckGo as tertiary
-            # Wikipedia and Wikidata for authoritative data
-            # GDELT for news, DirectSiteCrawler for official sites, CommonCrawl as fallback
+            # Use Apps Script as the only search provider
             providers = [
-                SearXNGProvider(),
-                MozillaProvider(),
-                search_provider or WebSearchProvider(),
-                WikipediaProvider(),
-                WikidataProvider(),
-                GDELTProvider(),
-                DirectSiteCrawler(),
-                CommonCrawlProvider(),
+                search_provider or AppsScriptSearchProvider(),
             ]
             self.orchestrator = SearchOrchestrator(
                 providers=providers,
                 min_evidence=SearchOrchestrator.MIN_EVIDENCE_COUNT,
                 min_high_quality=1,
                 timeout_per_provider=15.0,
-                max_concurrent_providers=3,
+                max_concurrent_providers=1,
             )
         
         # ResearchEngine will use the orchestrator internally
