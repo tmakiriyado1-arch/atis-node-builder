@@ -15,6 +15,7 @@ DATABASE_URL = os.getenv(
 # LLM Provider
 MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY", "")
 MISTRAL_MODEL = os.getenv("MISTRAL_MODEL", "mistral-large-latest")
+MISTRAL_RESEARCH_MODEL = os.getenv("MISTRAL_RESEARCH_MODEL", "mistral-large-latest")
 
 # Logging
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")

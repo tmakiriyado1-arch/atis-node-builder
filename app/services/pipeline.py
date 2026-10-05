@@ -86,12 +86,13 @@ class EntityPipelineService:
             )
         
         # ResearchEngine will use the orchestrator internally
-        # FIX: Enable semantic extraction by default in ResearchEngine
+        # FIX: Enable semantic extraction and Mistral web research by default
         self.research_engine = research_engine or ResearchEngine(
             search_provider=self.search_provider,
             llm_provider=self.llm_provider,
             orchestrator=self.orchestrator,
             use_semantic_extraction=True,
+            use_mistral_web_research=True,
         )
         self.classifier = classifier or ClaimClassifier(registry=self.registry, resolver=self.resolver)
         self.node_builder = node_builder or NodeDraftBuilder(registry=self.registry, resolver=self.resolver)
@@ -144,6 +145,13 @@ class EntityPipelineService:
         # Log research result details
         pipeline_logger.info(f"[PIPELINE {source_entity_id}] Research claims_count={len(getattr(research_result, 'claims', []))}, evidence_count={len(research_result.evidence)}")
         
+        # Log Mistral web research metadata if available
+        if hasattr(research_result, 'metadata'):
+            research_method = research_result.metadata.get('research_method', 'unknown')
+            pipeline_logger.info(f"[PIPELINE {source_entity_id}] Research method={research_method}")
+            if research_method == 'mistral_web_agent':
+                pipeline_logger.info(f"[PIPELINE {source_entity_id}] Mistral research: status={research_result.metadata.get('mistral_research_status', 'unknown')}, sources_examined={research_result.metadata.get('sources_examined', 0)}, sources_accepted={research_result.metadata.get('sources_accepted', 0)}")
+        
         # IMPORTANT: Check research_status (quality) NOT just execution status
         # research_result.status is execution status ("started", "completed", "failed")
         # research_result.research_status is research quality (COMPLETE, PARTIAL, DEGRADED, INSUFFICIENT, UNAVAILABLE)
@@ -173,22 +181,28 @@ class EntityPipelineService:
             result.error_message = research_result.error_message or "No usable evidence was collected."
             return result
 
-        # FIX: Consume claims already produced by ResearchEngine (semantic extraction)
-        # Do NOT call legacy enrichment - ResearchEngine already did semantic extraction
+        # FIX: Consume claims already produced by ResearchEngine (Mistral web research or semantic extraction)
+        # Do NOT call legacy enrichment - ResearchEngine already did the research
         claims = list(getattr(research_result, "claims", None) or [])
-        pipeline_logger.info(f"[PIPELINE {source_entity_id}] Semantic extraction: claims_count={len(claims)}")
+        pipeline_logger.info(f"[PIPELINE {source_entity_id}] Research claims consumed: claims_count={len(claims)}")
         
-        # If semantic extraction produced no claims, check if we should use fallback
+        # If research produced no claims, check if we should use fallback
         if not claims:
-            # Check if research_engine used semantic extraction
-            # If use_semantic_extraction was True but we got no claims, 
-            # this means Mistral semantic extraction returned nothing
-            # Log this as a semantic extraction failure, not as a reason to fall back to legacy
-            pipeline_logger.warning(f"[PIPELINE {source_entity_id}] SEMANTIC EXTRACTION RETURNED 0 CLAIMS from {len(result.evidence)} evidence items")
-            # Do NOT fall back to legacy enrichment - the semantic path is the canonical path
+            # Log detailed diagnostics about why no claims were produced
+            research_method = getattr(research_result, 'metadata', {}).get('research_method', 'unknown')
+            if research_method == 'mistral_web_agent':
+                mistral_status = getattr(research_result, 'metadata', {}).get('mistral_research_status', 'unknown')
+                sources_accepted = getattr(research_result, 'metadata', {}).get('sources_accepted', 0)
+                evidence_items = getattr(research_result, 'metadata', {}).get('evidence_items', 0)
+                pipeline_logger.error(f"[PIPELINE {source_entity_id}] MISTRAL WEB RESEARCH RETURNED 0 CLAIMS: status={mistral_status}, sources_accepted={sources_accepted}, evidence_items={evidence_items}")
+            else:
+                pipeline_logger.warning(f"[PIPELINE {source_entity_id}] SEMANTIC EXTRACTION RETURNED 0 CLAIMS from {len(result.evidence)} evidence items")
+            
+            # Do NOT fall back to legacy enrichment - the new research path is the canonical path
             result.claims = claims
         else:
             result.claims = claims
+            
         if not claims:
             pipeline_logger.error(f"[PIPELINE {source_entity_id}] NO CLAIMS GENERATED from {len(result.evidence)} evidence items")
             result.status = "insufficient"

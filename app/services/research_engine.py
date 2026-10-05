@@ -12,6 +12,11 @@ from app.services.research.mistral_enrichment import (
     enrich_evidence_with_mistral,
     enrich_evidence_with_semantic_extraction_to_claims,
 )
+from app.services.research.mistral_web_research import (
+    MistralWebResearchProvider,
+    ResearchContext,
+    ResearchStatus as MistralResearchStatus,
+)
 from app.services.research.search_orchestrator import ResearchStatus, SearchOrchestrator
 from app.services.research.search_provider import SearchProvider
 from app.services.research.apps_script_provider import AppsScriptSearchProvider
@@ -131,11 +136,13 @@ class ResearchEngine:
         llm_provider: Optional[Any] = None,
         orchestrator: Optional[SearchOrchestrator] = None,
         use_semantic_extraction: bool = True,
+        use_mistral_web_research: bool = True,
     ):
         self.search_provider = search_provider
         self.llm_provider = llm_provider
         self.orchestrator = orchestrator
         self.use_semantic_extraction = use_semantic_extraction
+        self.use_mistral_web_research = use_mistral_web_research
         
         # PHASE 19: Detect test providers and skip orchestrator creation
         is_test_provider = False
@@ -147,6 +154,15 @@ class ResearchEngine:
         # But skip for test providers to avoid crawling issues
         if self.orchestrator is None and not is_test_provider:
             self.orchestrator = self._create_default_orchestrator(search_provider)
+        
+        # Initialize Mistral web research provider if enabled
+        if self.use_mistral_web_research:
+            self.mistral_web_research_provider = MistralWebResearchProvider(
+                api_key=config.MISTRAL_API_KEY,
+                model=config.MISTRAL_RESEARCH_MODEL,
+            )
+        else:
+            self.mistral_web_research_provider = None
 
     def generate_queries(
         self,
@@ -358,74 +374,145 @@ class ResearchEngine:
             result.summary = "No public evidence was available for this entity in the current research slice."
             result.status = "completed"  # Execution completed, even if no evidence
             return result
-
-        # Use full content from evidence for enrichment, not just snippets
-        # Pass the complete evidence records with full content
-        from copy import copy as copy_func
-        evidence_for_enrichment = []
-        for ev in deduped_evidence:
-            # Use normalized_text if available (authoritative semantic text),
-            # otherwise full content, otherwise snippet
-            text = getattr(ev, 'normalized_text', None) or \
-                  getattr(ev, 'content', None) or ev.snippet or ""
-            # Create a copy with the authoritative text preserved
-            ev_copy = copy_func(ev)
-            ev_copy.snippet = text
-            evidence_for_enrichment.append(ev_copy)
         
-        # PHASE 19: Check if we have enough evidence to proceed
-        # Don't fail execution based on research quality - the pipeline will check research_status
-        if self.llm_provider is not None:
-            try:
-                # Use semantic extraction if enabled, otherwise legacy enrichment
-                if self.use_semantic_extraction:
-                    logger.info(f"[ENRICH {cleaned_name}] Using semantic extraction path")
-                    claims = await enrich_evidence_with_semantic_extraction_to_claims(
-                        cleaned_name,
-                        evidence_for_enrichment,
-                        api_key=getattr(self.llm_provider, "api_key", config.MISTRAL_API_KEY),
-                        model=getattr(self.llm_provider, "model", config.MISTRAL_MODEL),
+        # =============================================================================
+        # NEW PRIMARY PATH: Mistral Web Research
+        # =============================================================================
+        # Use Mistral Web Research Provider as the primary research path
+        # This moves the boundary: NORA discovers URLs, Mistral researches them
+        
+        if self.use_mistral_web_research and self.mistral_web_research_provider is not None:
+            # Extract candidate URLs from evidence
+            candidate_urls = [ev.url for ev in deduped_evidence if ev.url]
+            
+            if candidate_urls:
+                logger.info(f"[MISTRAL_WEB_RESEARCH {cleaned_name}] Starting Mistral web research with {len(candidate_urls)} candidate URLs")
+                
+                # Build research context
+                research_context = ResearchContext(
+                    entity_name=cleaned_name,
+                    entity_type=entity_type,
+                    aliases=search_context.get("aliases", []),
+                    metadata=search_context.get("metadata", {}),
+                    candidate_urls=candidate_urls,
+                )
+                
+                try:
+                    # Perform Mistral web research
+                    mistral_result = await self.mistral_web_research_provider.research(
+                        research_context
                     )
-                    logger.info(f"[ENRICH {cleaned_name}] Semantic extraction returned {len(claims)} claims")
-                else:
-                    logger.info(f"[ENRICH {cleaned_name}] Using legacy enrichment path")
-                    claims = await enrich_evidence_with_mistral(
-                        cleaned_name,
-                        evidence_for_enrichment,
-                        api_key=getattr(self.llm_provider, "api_key", config.MISTRAL_API_KEY),
-                        model=getattr(self.llm_provider, "model", config.MISTRAL_MODEL),
-                    )
-                    logger.info(f"[ENRICH {cleaned_name}] Legacy enrichment returned {len(claims)} claims")
-            except Exception as e:
-                logger.warning(f"[ENRICH {cleaned_name}] LLM enrichment failed: {e}")
+                    
+                    logger.info(f"[MISTRAL_WEB_RESEARCH {cleaned_name}] Mistral research status={mistral_result.research_status.value}")
+                    logger.info(f"[MISTRAL_WEB_RESEARCH {cleaned_name}] sources_accepted={mistral_result.sources_accepted}, evidence_items={mistral_result.total_evidence_count}")
+                    
+                    # Convert Mistral research result to claims
+                    claims = mistral_result.to_research_claims()
+                    
+                    # Update research result with Mistral research metadata
+                    result.metadata = getattr(result, 'metadata', {})
+                    result.metadata['research_method'] = 'mistral_web_agent'
+                    result.metadata['mistral_research_status'] = mistral_result.research_status.value
+                    result.metadata['sources_examined'] = mistral_result.sources_examined
+                    result.metadata['sources_accepted'] = mistral_result.sources_accepted
+                    result.metadata['sources_rejected'] = mistral_result.sources_rejected
+                    result.metadata['evidence_items'] = mistral_result.total_evidence_count
+                    
+                    # Map Mistral research status to orchestrator ResearchStatus
+                    if mistral_result.research_status == MistralResearchStatus.SUFFICIENT:
+                        result.research_status = ResearchStatus.COMPLETE
+                    elif mistral_result.research_status == MistralResearchStatus.INSUFFICIENT:
+                        result.research_status = ResearchStatus.INSUFFICIENT
+                    elif mistral_result.research_status == MistralResearchStatus.AMBIGUOUS:
+                        result.research_status = ResearchStatus.DEGRADED
+                    elif mistral_result.research_status == MistralResearchStatus.FALSE_ENTITY:
+                        result.research_status = ResearchStatus.INSUFFICIENT
+                    elif mistral_result.research_status == MistralResearchStatus.FAILED:
+                        result.research_status = ResearchStatus.UNAVAILABLE
+                    
+                    logger.info(f"[ENRICH {cleaned_name}] Mistral web research returned {len(claims)} claims")
+                    
+                except Exception as e:
+                    logger.error(f"[MISTRAL_WEB_RESEARCH {cleaned_name}] Mistral web research failed: {e}")
+                    result.errors.append(f"Mistral web research failed: {e}")
+                    # Fall through to semantic extraction path
+                    claims = []
+            else:
+                logger.warning(f"[MISTRAL_WEB_RESEARCH {cleaned_name}] No candidate URLs available")
                 claims = []
+        
+        # =============================================================================
+        # FALLBACK PATH: Semantic Extraction (if Mistral web research disabled or failed)
+        # =============================================================================
+        
+        if not claims:
+            # Use full content from evidence for enrichment, not just snippets
+            from copy import copy as copy_func
+            evidence_for_enrichment = []
+            for ev in deduped_evidence:
+                # Use normalized_text if available (authoritative semantic text),
+                # otherwise full content, otherwise snippet
+                text = getattr(ev, 'normalized_text', None) or \
+                      getattr(ev, 'content', None) or ev.snippet or ""
+                # Create a copy with the authoritative text preserved
+                ev_copy = copy_func(ev)
+                ev_copy.snippet = text
+                evidence_for_enrichment.append(ev_copy)
+            
+            # PHASE 19: Check if we have enough evidence to proceed
+            # Don't fail execution based on research quality - the pipeline will check research_status
+            if self.llm_provider is not None:
+                try:
+                    # Use semantic extraction if enabled, otherwise legacy enrichment
+                    if self.use_semantic_extraction:
+                        logger.info(f"[ENRICH {cleaned_name}] Using semantic extraction path (fallback)")
+                        claims = await enrich_evidence_with_semantic_extraction_to_claims(
+                            cleaned_name,
+                            evidence_for_enrichment,
+                            api_key=getattr(self.llm_provider, "api_key", config.MISTRAL_API_KEY),
+                            model=getattr(self.llm_provider, "model", config.MISTRAL_MODEL),
+                        )
+                        logger.info(f"[ENRICH {cleaned_name}] Semantic extraction returned {len(claims)} claims")
+                    else:
+                        logger.info(f"[ENRICH {cleaned_name}] Using legacy enrichment path")
+                        claims = await enrich_evidence_with_mistral(
+                            cleaned_name,
+                            evidence_for_enrichment,
+                            api_key=getattr(self.llm_provider, "api_key", config.MISTRAL_API_KEY),
+                            model=getattr(self.llm_provider, "model", config.MISTRAL_MODEL),
+                        )
+                        logger.info(f"[ENRICH {cleaned_name}] Legacy enrichment returned {len(claims)} claims")
+                except Exception as e:
+                    logger.warning(f"[ENRICH {cleaned_name}] LLM enrichment failed: {e}")
+                    claims = []
+            
             if not claims:
                 claims = []
                 logger.info(f"[ENRICH {cleaned_name}] No claims from LLM enrichment")
-        if not claims:
-            # Fallback: use full content from evidence for claims
-            # This is an intentional degraded mode when LLM enrichment fails
-            logger.info(f"[ENRICH {cleaned_name}] Fallback generated {len(deduped_evidence)} claims from {len(deduped_evidence)} evidence items")
-            for evidence in deduped_evidence:
-                field_name = (fields_to_research or ["entity_profile"])[0]
-                # Use normalized_text if available (authoritative semantic text),
-                # otherwise full content, otherwise snippet
-                content = getattr(evidence, 'normalized_text', None) or \
-                          getattr(evidence, 'content', None) or evidence.snippet or ""
-                claims.append(
-                    ResearchClaim(
-                        claim=content,
-                        field_name=field_name,
-                        source_url=evidence.url,
-                        source_title=evidence.title or None,
-                        evidence_passage=content,
-                        source_type="webpage",
-                        confidence=0.0,
-                        extraction_method="fallback",  # Mark as fallback for traceability
-                        extracted_at=datetime.now(),
-                        evidence_urls=[evidence.url] if evidence.url else [],
+                
+                # Fallback: use full content from evidence for claims
+                # This is an intentional degraded mode when LLM enrichment fails
+                logger.info(f"[ENRICH {cleaned_name}] Fallback generated {len(deduped_evidence)} claims from {len(deduped_evidence)} evidence items")
+                for evidence in deduped_evidence:
+                    field_name = (fields_to_research or ["entity_profile"])[0]
+                    # Use normalized_text if available (authoritative semantic text),
+                    # otherwise full content, otherwise snippet
+                    content = getattr(evidence, 'normalized_text', None) or \
+                              getattr(evidence, 'content', None) or evidence.snippet or ""
+                    claims.append(
+                        ResearchClaim(
+                            claim=content,
+                            field_name=field_name,
+                            source_url=evidence.url,
+                            source_title=evidence.title or None,
+                            evidence_passage=content,
+                            source_type="webpage",
+                            confidence=0.0,
+                            extraction_method="fallback",  # Mark as fallback for traceability
+                            extracted_at=datetime.now(),
+                            evidence_urls=[evidence.url] if evidence.url else [],
+                        )
                     )
-                )
 
         result.claims = claims
         result.evidence = deduped_evidence
