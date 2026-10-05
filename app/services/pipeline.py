@@ -71,11 +71,8 @@ class EntityPipelineService:
         if orchestrator is not None:
             self.orchestrator = orchestrator
         elif is_test_provider:
-            # For test providers, use legacy single-provider path
-            # This avoids the orchestrator trying to crawl fake URLs
             self.orchestrator = None
         else:
-            # Use Apps Script as the only search provider
             providers = [
                 search_provider or AppsScriptSearchProvider(),
             ]
@@ -85,13 +82,16 @@ class EntityPipelineService:
                 min_high_quality=1,
                 timeout_per_provider=15.0,
                 max_concurrent_providers=1,
+                use_relevance_filtering=False,
             )
         
         # ResearchEngine will use the orchestrator internally
+        # FIX: Enable semantic extraction by default in ResearchEngine
         self.research_engine = research_engine or ResearchEngine(
             search_provider=self.search_provider,
             llm_provider=self.llm_provider,
             orchestrator=self.orchestrator,
+            use_semantic_extraction=True,
         )
         self.classifier = classifier or ClaimClassifier(registry=self.registry, resolver=self.resolver)
         self.node_builder = node_builder or NodeDraftBuilder(registry=self.registry, resolver=self.resolver)
@@ -140,7 +140,10 @@ class EntityPipelineService:
         # Log orchestrator status if available
         if hasattr(research_result, 'research_status'):
             pipeline_logger.info(f"[PIPELINE {source_entity_id}] Research status={research_result.research_status}, succeeded={len(research_result.providers_succeeded)}, failed={len(research_result.providers_failed)}")
-
+        
+        # Log research result details
+        pipeline_logger.info(f"[PIPELINE {source_entity_id}] Research claims_count={len(getattr(research_result, 'claims', []))}, evidence_count={len(research_result.evidence)}")
+        
         # IMPORTANT: Check research_status (quality) NOT just execution status
         # research_result.status is execution status ("started", "completed", "failed")
         # research_result.research_status is research quality (COMPLETE, PARTIAL, DEGRADED, INSUFFICIENT, UNAVAILABLE)
@@ -170,10 +173,22 @@ class EntityPipelineService:
             result.error_message = research_result.error_message or "No usable evidence was collected."
             return result
 
-        # PHASE 17: Pass RITA entity to enricher to preserve canonical name
-        claims = await self._enrich_entity(entity_name, result.evidence, entity=rita_entity)
-        pipeline_logger.info(f"[PIPELINE {source_entity_id}] Enrichment: claims_count={len(claims)}")
-        result.claims = claims
+        # FIX: Consume claims already produced by ResearchEngine (semantic extraction)
+        # Do NOT call legacy enrichment - ResearchEngine already did semantic extraction
+        claims = list(getattr(research_result, "claims", None) or [])
+        pipeline_logger.info(f"[PIPELINE {source_entity_id}] Semantic extraction: claims_count={len(claims)}")
+        
+        # If semantic extraction produced no claims, check if we should use fallback
+        if not claims:
+            # Check if research_engine used semantic extraction
+            # If use_semantic_extraction was True but we got no claims, 
+            # this means Mistral semantic extraction returned nothing
+            # Log this as a semantic extraction failure, not as a reason to fall back to legacy
+            pipeline_logger.warning(f"[PIPELINE {source_entity_id}] SEMANTIC EXTRACTION RETURNED 0 CLAIMS from {len(result.evidence)} evidence items")
+            # Do NOT fall back to legacy enrichment - the semantic path is the canonical path
+            result.claims = claims
+        else:
+            result.claims = claims
         if not claims:
             pipeline_logger.error(f"[PIPELINE {source_entity_id}] NO CLAIMS GENERATED from {len(result.evidence)} evidence items")
             result.status = "insufficient"
@@ -247,11 +262,16 @@ class EntityPipelineService:
     async def _enrich_entity(self, entity_name: str, evidence: Sequence[EvidenceRecord], entity: Optional[RITAEntity] = None) -> List[ResearchClaim]:
         from app.logging import logger as pipeline_logger
         
+        # This method is now a fallback/legacy path only
+        # Production should use ResearchEngine's semantic extraction directly
+        # via research_result.claims
+        pipeline_logger.warning(f"[ENRICH {entity_name}] _enrich_entity called - this is the LEGACY path, not semantic extraction")
+        
         if not evidence:
             pipeline_logger.warning(f"[ENRICH {entity_name}] No evidence provided")
             return []
 
-        pipeline_logger.info(f"[ENRICH {entity_name}] Processing {len(evidence)} evidence items")
+        pipeline_logger.info(f"[ENRICH {entity_name}] LEGACY: Processing {len(evidence)} evidence items")
         
         llm_provider = self.llm_provider
         api_key = getattr(llm_provider, "api_key", None) if llm_provider is not None else None
@@ -263,19 +283,19 @@ class EntityPipelineService:
         
         # Try LLM enrichment if API key is available
         if api_key and self.enricher is not None:
-            pipeline_logger.info(f"[ENRICH {entity_name}] Attempting LLM enrichment with {len(evidence)} evidence items")
+            pipeline_logger.info(f"[ENRICH {entity_name}] LEGACY: Attempting LLM enrichment with {len(evidence)} evidence items")
             try:
                 claims = await self.enricher(entity_name, list(evidence), api_key=api_key, model=getattr(llm_provider, "model", None) if llm_provider is not None else None)
                 if isinstance(claims, list):
                     filtered = [claim for claim in claims if isinstance(claim, ResearchClaim)]
-                    pipeline_logger.info(f"[ENRICH {entity_name}] LLM returned {len(filtered)} claims")
+                    pipeline_logger.info(f"[ENRICH {entity_name}] LEGACY: LLM returned {len(filtered)} claims")
                     if filtered:
                         return filtered
             except Exception as e:
-                pipeline_logger.warning(f"[ENRICH {entity_name}] LLM enrichment failed: {e}")
+                pipeline_logger.warning(f"[ENRICH {entity_name}] LEGACY: LLM enrichment failed: {e}")
                 pass
         else:
-            pipeline_logger.info(f"[ENRICH {entity_name}] No LLM available, using fallback")
+            pipeline_logger.info(f"[ENRICH {entity_name}] LEGACY: No LLM available, using fallback")
         
         # Fallback: use normalized evidence text as claims when no LLM is available
         # Evidence.normalized_text is ALWAYS semantic text (never raw HTML)
@@ -288,7 +308,7 @@ class EntityPipelineService:
                 text = getattr(evidence_item, "snippet", None) or ""
             url = getattr(evidence_item, "url", None) or ""
             title = getattr(evidence_item, "title", None) or ""
-            pipeline_logger.info(f"[ENRICH {entity_name}] Evidence #{idx}: text_len={len(text)} url={url[:50] if url else 'None'} title={title[:50] if title else 'None'}")
+            pipeline_logger.info(f"[ENRICH {entity_name}] LEGACY: Evidence #{idx}: text_len={len(text)} url={url[:50] if url else 'None'} title={title[:50] if title else 'None'}")
             if text:
                 # Create claim with evidence_urls list containing this URL
                 claims.append(
@@ -306,7 +326,7 @@ class EntityPipelineService:
                 )
             else:
                 # Even if text is empty, create a claim to preserve the URL
-                pipeline_logger.info(f"[ENRICH {entity_name}] Evidence #{idx}: empty text but preserving URL: {url}")
+                pipeline_logger.info(f"[ENRICH {entity_name}] LEGACY: Evidence #{idx}: empty text but preserving URL: {url}")
                 claims.append(
                     ResearchClaim(
                         claim=f"Source: {title or url}",
@@ -320,7 +340,7 @@ class EntityPipelineService:
                         evidence_urls=[url] if url else [],
                     )
                 )
-        pipeline_logger.info(f"[ENRICH {entity_name}] Fallback generated {len(claims)} claims from {len(evidence)} evidence items")
+        pipeline_logger.info(f"[ENRICH {entity_name}] LEGACY: Fallback generated {len(claims)} claims from {len(evidence)} evidence items")
         return claims
 
     @staticmethod

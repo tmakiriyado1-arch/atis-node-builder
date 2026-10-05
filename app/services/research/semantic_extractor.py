@@ -453,7 +453,7 @@ Ontology Rules:
         document: ResearchDocument,
         chunks: List[Dict[str, Any]],
     ) -> str:
-        """Build the extraction prompt for Mistral.
+        """Build the extraction prompt for Mistral with formal research contract.
         
         Args:
             entity_name: The entity being researched
@@ -467,50 +467,116 @@ Ontology Rules:
         
         # Build the required JSON format example
         json_example = {
+            "entity_assessment": {
+                "entity_match": True,
+                "match_type": "DIRECT",
+                "match_confidence": 0.98
+            },
             "atomic_evidence": [
                 {
                     "subject": "<entity_name>",
                     "predicate": "<predicate_from_ontology>",
                     "object": "<target_or_value>",
-                    "passage": "<exact_quote_from_evidence>",
                     "evidence_type": "<FACT|ATTRIBUTE|RELATIONSHIP|ASSOCIATION|SUMMARY>",
+                    "evidence_level": "DIRECT",
+                    "passage": "<exact_quote_from_evidence>",
                     "chunk_index": 0
                 }
             ],
-            "entity_match_verified": True,
+            "uncertainties": [],
+            "conflicts": [],
             "errors": []
         }
         
         prompt = (
-            "You are the FINAL SEMANTIC DECISION-MAKER for structured evidence extraction.\n"
+            "You are NORA's semantic research extraction engine.\n"
             "\n"
-            "YOUR TASK:\n"
-            "Extract atomic evidence (facts, attributes, relationships, associations) from the provided document chunks.\n"
+            "## ROLE\n"
+            "Your job is to transform supplied source documents into structured, evidence-backed knowledge about ONE requested entity.\n"
+            "You are NOT a web search engine.\n"
+            "You are NOT allowed to browse for additional information.\n"
+            "You are NOT allowed to use your pretrained knowledge to fill gaps.\n"
+            "You must use ONLY the supplied document content.\n"
+            "\n"
+            "## TARGET ENTITY\n"
+            "The request contains canonical name, aliases, entity type, country/region, and known metadata.\n"
+            "These fields are identity hints, not facts to be blindly asserted.\n"
+            "The document may refer to the entity using: canonical name, alias, abbreviation, shortened name, institutional name, domain-associated name, or grammatical variation.\n"
+            "Do NOT require the exact canonical name string to appear.\n"
+            "Example: Target: Theotechnic College. Document: Theo Technical College. This may still be the same entity.\n"
+            "Determine identity from the supplied evidence.\n"
+            "\n"
+            "## ENTITY MATCHING\n"
+            "Before extracting evidence, determine whether the document is actually about the target entity.\n"
+            "Return entity_match with:\n"
+            "- DIRECT: document explicitly identifies the requested entity\n"
+            "- ALIAS: document uses an identifiable alternate name, abbreviation, or institutional variation\n"
+            "- CONTEXTUAL: document strongly establishes the entity through multiple identifying details\n"
+            "- AMBIGUOUS: document could refer to the entity, but identity is not sufficiently established\n"
+            "- FALSE: document concerns another entity\n"
+            "Only DIRECT, ALIAS, and sufficiently strong CONTEXTUAL matches may produce evidence.\n"
+            "Do not extract facts about an unrelated entity merely because the page contains similar words.\n"
+            "\n"
+            "## EVIDENCE PRINCIPLE\n"
+            "An evidence item is a discrete statement that can be supported directly by the supplied document.\n"
+            "Every evidence item MUST contain: subject, predicate, object, evidence_type, passage, source_url, chunk_index.\n"
+            "The passage MUST be an exact verbatim substring of the supplied document.\n"
+            "Never paraphrase the passage. Never synthesize a passage. Never write a passage that does not exist in the document.\n"
+            "\n"
+            "## EVIDENCE TYPES\n"
+            "- FACT: A discrete factual statement. Example: The institution was established in 1998.\n"
+            "- ATTRIBUTE: A property of the entity. Examples: country, location, headquarters, entity_type, sector, status, founded_date, website, registration, ownership.\n"
+            "- RELATIONSHIP: An explicit directional relationship. Examples: operates, owns, manages, regulates, governs, oversees, administers, parent_of, subsidiary_of, located_in, part_of, offers, serves.\n"
+            "  Only use predicates permitted by the ATIS ontology.\n"
+            "- ASSOCIATION: A meaningful connection. Examples: member_of, partner_of, affiliated_with, associated_with, accredited_by, works_with.\n"
+            "- SUMMARY: A concise description of what the entity does, but still supported by an exact source passage.\n"
+            "\n"
+            "## EXPLICITNESS RULES\n"
+            "Use three evidence levels: DIRECT, STRONG_CONTEXTUAL, INFERRED.\n"
+            "Only DIRECT and STRONG_CONTEXTUAL evidence may become extracted evidence.\n"
+            "INFERRED information MUST NOT be promoted into a fact.\n"
+            "Example: If a page says 'The college offers engineering and construction programmes.', you may extract: offers -> engineering programmes, offers -> construction programmes.\n"
+            "You may NOT infer: is accredited by X, owns Y, is regulated by Z, unless the document explicitly supports those relationships.\n"
+            "\n"
+            "## RELATIONSHIPS\n"
+            "Relationships must be conservative. A relationship requires explicit textual support.\n"
+            "Do NOT infer: located_in, owned_by, regulated_by, partner_of, accredited_by, member_of merely because the entities appear near each other.\n"
+            "If the document says 'The college operates under the Ministry of ...', then the relationship may be extracted.\n"
+            "If the page merely mentions the Ministry elsewhere, do not create a relationship.\n"
+            "\n"
+            "## ATTRIBUTES\n"
+            "Extract supported attributes: entity_type, subtype, country, region, city, headquarters, status, founded_date, established_date, website, sector, industry, ownership, registration, mission, activities, services, programmes.\n"
+            "Only return an attribute when the document supports it.\n"
+            "\n"
+            "## IDENTITY AND ALIASES\n"
+            "If the document identifies an alternate name, extract it as: subject = target entity, predicate = alias, object = alternate name.\n"
+            "Do not replace the canonical RITA name. The RITA canonical name remains the identity used by NORA.\n"
+            "\n"
+            "## CONFLICTING INFORMATION\n"
+            "If two passages in the same document conflict, return them in conflicts array.\n"
+            "NORA will resolve conflicts at the evidence aggregation stage.\n"
+            "\n"
+            "## UNCERTAINTY\n"
+            "Never convert uncertainty into fact. Return unsupported or uncertain information separately in uncertainties array.\n"
+            "\n"
+            "## CHUNKING\n"
+            "Long documents may be split into deterministic chunks. Each chunk preserves: document_id, source_url, chunk_index, total_chunks, text.\n"
+            "An extracted passage must be validated against the complete document whenever possible.\n"
+            "\n"
+            "## QUALITY ARCHITECTURE\n"
+            "Do NOT use number of URLs, number of search results, or number of crawled pages as the final semantic quality measure.\n"
+            "Track: URLs discovered, URLs crawled, successful crawls, documents with usable text, documents matching entity, atomic evidence extracted, valid atomic evidence, invalid/rejected evidence, distinct source URLs, direct evidence count, relationship evidence count, attribute evidence count, conflicts, uncertainties.\n"
+            "The semantic quality decision must be based on the resulting evidence.\n"
             "\n"
             f"{ontology_context}\n\n"
-            "EXTRACTION RULES:\n"
-            "1. ENTITY MATCH VERIFICATION: Before extracting ANYTHING, verify that the entity is mentioned in the evidence.\n"
-            "   If the entity is NOT mentioned, return empty results.\n"
-            "2. ATOMIC EVIDENCE: Each claim must have its own EXACT passage quote from the evidence.\n"
-            "3. EVIDENCE TYPES:\n"
-            "   - FACT: Verifiable factual statements\n"
-            "   - ATTRIBUTE: Entity properties (type, country, sector, status, headquarters, website, etc.)\n"
-            "   - RELATIONSHIP: Explicit relationships using canonical predicates (regulates, manages, oversees, etc.)\n"
-            "   - ASSOCIATION: Looser associations (connected_to, associated_with, member_of, etc.)\n"
-            "   - SUMMARY: Descriptions of what the entity does\n"
-            "4. CONSERVATIVE EXTRACTION:\n"
-            "   - Only extract relationships that are EXPLICITLY stated\n"
-            "   - Do NOT infer relationships from context\n"
-            "   - Do NOT extract relationships that use non-canonical predicates\n"
-            "5. PASSAGE REQUIREMENT: Every claim MUST include the exact quote from the evidence\n"
-            "6. NO FABRICATION: Do not invent, guess, or paraphrase. Use exact evidence text.\n"
-            "7. NO OUTSIDE KNOWLEDGE: Only use the provided evidence content.\n"
-            "8. If evidence is insufficient or unclear, return NO claim for that item.\n\n"
+            "## CONTEXT\n"
             f"Entity: {entity_name or 'unknown'}\n"
             f"Document: {document.title or 'Untitled'} ({document.url})\n\n"
             f"Chunks: {json.dumps(chunks, ensure_ascii=False)}\n\n"
-            "Required JSON response format:\n"
-            f"{json.dumps(json_example, indent=2)}\n"
+            "## OUTPUT SCHEMA\n"
+            "Return JSON only with this exact schema:\n"
+            f"{json.dumps(json_example, indent=2)}\n\n"
+            "IMPORTANT: Do not return prose outside the JSON object.\n"
         )
         
         return prompt
@@ -605,30 +671,50 @@ Ontology Rules:
         Returns:
             ExtractionResult with atomic evidence
         """
+        import logging
+        logger = logging.getLogger(__name__)
+        
         atomic_evidence = []
         errors = []
         entity_match_verified = False
         
-        # Check entity match verification
-        if isinstance(parsed.get("entity_match_verified"), bool):
-            entity_match_verified = parsed["entity_match_verified"]
+        # Log semantic extraction start
+        logger.info(f"[SEMANTIC_EXTRACTION] document_id={document.document_id}, url={document.url}, entity={entity_name}")
+        
+        # Check entity match from Mistral response
+        entity_assessment = parsed.get("entity_assessment", {})
+        if isinstance(entity_assessment, dict):
+            entity_match_verified = bool(entity_assessment.get("entity_match", False))
+            match_type = entity_assessment.get("match_type", "UNKNOWN")
+            match_confidence = entity_assessment.get("match_confidence", 0.0)
+            logger.info(f"[SEMANTIC_EXTRACTION] entity_match={entity_match_verified}, match_type={match_type}, confidence={match_confidence}")
         else:
-            # Fallback: verify ourselves
-            entity_match_verified = self._verify_entity_match(entity_name, document)
+            # Fallback: check old format or verify ourselves
+            if isinstance(parsed.get("entity_match_verified"), bool):
+                entity_match_verified = parsed["entity_match_verified"]
+            else:
+                entity_match_verified = self._verify_entity_match(entity_name, document)
+            logger.info(f"[SEMANTIC_EXTRACTION] entity_match={entity_match_verified} (fallback)")
         
         # Get errors
         if isinstance(parsed.get("errors"), list):
             errors = [str(e) for e in parsed["errors"]]
         
+        # Log document details
+        logger.info(f"[SEMANTIC_EXTRACTION] normalized_chars={len(document.normalized_text)}, chunks={len(document.chunks)}")
+        
         # Parse atomic evidence
         evidence_list = parsed.get("atomic_evidence") or []
         if not isinstance(evidence_list, list):
+            logger.warning(f"[SEMANTIC_EXTRACTION] No atomic_evidence list in response")
             return ExtractionResult(
                 document=document,
                 atomic_evidence=[],
                 entity_match_verified=entity_match_verified,
-                extraction_errors=errors,
+                extraction_errors=errors + ["No atomic_evidence list in response"],
             )
+        
+        logger.info(f"[SEMANTIC_EXTRACTION] atomic_evidence_items={len(evidence_list)}")
         
         for item in evidence_list:
             if not isinstance(item, dict):
@@ -691,6 +777,9 @@ Ontology Rules:
                     "entity_match_verified": entity_match_verified,
                 },
             ))
+        
+        # Log final result
+        logger.info(f"[SEMANTIC_EXTRACTION] accepted_evidence={len(atomic_evidence)}, rejected={len(evidence_list) - len(atomic_evidence)}")
         
         return ExtractionResult(
             document=document,

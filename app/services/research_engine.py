@@ -379,24 +379,29 @@ class ResearchEngine:
             try:
                 # Use semantic extraction if enabled, otherwise legacy enrichment
                 if self.use_semantic_extraction:
+                    logger.info(f"[ENRICH {cleaned_name}] Using semantic extraction path")
                     claims = await enrich_evidence_with_semantic_extraction_to_claims(
                         cleaned_name,
                         evidence_for_enrichment,
                         api_key=getattr(self.llm_provider, "api_key", config.MISTRAL_API_KEY),
                         model=getattr(self.llm_provider, "model", config.MISTRAL_MODEL),
                     )
+                    logger.info(f"[ENRICH {cleaned_name}] Semantic extraction returned {len(claims)} claims")
                 else:
+                    logger.info(f"[ENRICH {cleaned_name}] Using legacy enrichment path")
                     claims = await enrich_evidence_with_mistral(
                         cleaned_name,
                         evidence_for_enrichment,
                         api_key=getattr(self.llm_provider, "api_key", config.MISTRAL_API_KEY),
                         model=getattr(self.llm_provider, "model", config.MISTRAL_MODEL),
                     )
+                    logger.info(f"[ENRICH {cleaned_name}] Legacy enrichment returned {len(claims)} claims")
             except Exception as e:
                 logger.warning(f"[ENRICH {cleaned_name}] LLM enrichment failed: {e}")
                 claims = []
             if not claims:
                 claims = []
+                logger.info(f"[ENRICH {cleaned_name}] No claims from LLM enrichment")
         if not claims:
             # Fallback: use full content from evidence for claims
             # This is an intentional degraded mode when LLM enrichment fails
