@@ -1,14 +1,26 @@
-"""Single Mistral enrichment path for candidate research claims."""
+"""Single Mistral enrichment path for candidate research claims.
+
+This module provides two enrichment paths:
+1. Legacy enrichment: Generic claim extraction (preserved for backward compatibility)
+2. Semantic extraction: Structured atomic evidence with categorization
+"""
 from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from typing import Any, Iterable, List, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 import httpx
 
 from app import config
 from app.services.research.evidence import EvidenceRecord, EvidenceStatus, ExtractionQuality
+from app.services.research.semantic_extractor import (
+    MistralSemanticExtractor,
+    AtomicEvidence,
+    EvidenceType,
+    ExtractionResult,
+    ResearchDocument,
+)
 
 
 def _canonical_url_map(evidence_records: Sequence[EvidenceRecord]) -> dict[str, EvidenceRecord]:
@@ -297,3 +309,76 @@ Ontology Rules:
         )
 
     return accepted
+
+
+# =============================================================================
+# Semantic Extraction Path
+# =============================================================================
+
+async def enrich_evidence_with_semantic_extraction(
+    entity_name: str,
+    evidence_records: Sequence[EvidenceRecord],
+    api_key: Optional[str] = None,
+    model: Optional[str] = None,
+    client: httpx.AsyncClient | None = None,
+) -> List[AtomicEvidence]:
+    """Extract structured atomic evidence using semantic extraction.
+    
+    This is the new semantic extraction path that:
+    - Verifies entity match before extraction
+    - Returns atomic evidence with exact passages
+    - Categorizes evidence (FACT, ATTRIBUTE, RELATIONSHIP, ASSOCIATION, SUMMARY)
+    - Uses conservative relationship extraction
+    
+    Args:
+        entity_name: The entity being researched
+        evidence_records: List of EvidenceRecord to extract from
+        api_key: Mistral API key override
+        model: Model override
+        client: Optional httpx.AsyncClient for reuse
+        
+    Returns:
+        List of AtomicEvidence items
+    """
+    extractor = MistralSemanticExtractor(
+        api_key=api_key,
+        model=model,
+    )
+    
+    results = await extractor.extract(entity_name, evidence_records, client)
+    
+    # Collect all atomic evidence
+    all_evidence: List[AtomicEvidence] = []
+    for result in results:
+        all_evidence.extend(result.atomic_evidence)
+    
+    return all_evidence
+
+
+async def enrich_evidence_with_semantic_extraction_to_claims(
+    entity_name: str,
+    evidence_records: Sequence[EvidenceRecord],
+    api_key: Optional[str] = None,
+    model: Optional[str] = None,
+    client: httpx.AsyncClient | None = None,
+) -> List["ResearchClaim"]:
+    """Extract structured atomic evidence and convert to ResearchClaims.
+    
+    This provides a bridge between semantic extraction and the existing
+    ResearchClaim-based pipeline.
+    
+    Args:
+        entity_name: The entity being researched
+        evidence_records: List of EvidenceRecord to extract from
+        api_key: Mistral API key override
+        model: Model override
+        client: Optional httpx.AsyncClient for reuse
+        
+    Returns:
+        List of ResearchClaim objects (backward compatible)
+    """
+    atomic_evidence = await enrich_evidence_with_semantic_extraction(
+        entity_name, evidence_records, api_key, model, client
+    )
+    
+    return [ae.to_research_claim() for ae in atomic_evidence]

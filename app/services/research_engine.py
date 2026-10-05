@@ -8,10 +8,19 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from app import config
 from app.services.research.evidence import EvidenceRecord, deduplicate_evidence, normalize_search_result
-from app.services.research.mistral_enrichment import enrich_evidence_with_mistral
+from app.services.research.mistral_enrichment import (
+    enrich_evidence_with_mistral,
+    enrich_evidence_with_semantic_extraction_to_claims,
+)
 from app.services.research.search_orchestrator import ResearchStatus, SearchOrchestrator
 from app.services.research.search_provider import SearchProvider
 from app.services.research.apps_script_provider import AppsScriptSearchProvider
+from app.services.research.semantic_extractor import (
+    AtomicEvidence,
+    EvidenceType,
+    ExtractionResult,
+    ResearchDocument,
+)
 
 
 @dataclass
@@ -121,10 +130,12 @@ class ResearchEngine:
         search_provider: Optional[SearchProvider] = None,
         llm_provider: Optional[Any] = None,
         orchestrator: Optional[SearchOrchestrator] = None,
+        use_semantic_extraction: bool = True,
     ):
         self.search_provider = search_provider
         self.llm_provider = llm_provider
         self.orchestrator = orchestrator
+        self.use_semantic_extraction = use_semantic_extraction
         
         # PHASE 19: Detect test providers and skip orchestrator creation
         is_test_provider = False
@@ -366,12 +377,21 @@ class ResearchEngine:
         # Don't fail execution based on research quality - the pipeline will check research_status
         if self.llm_provider is not None:
             try:
-                claims = await enrich_evidence_with_mistral(
-                    cleaned_name,
-                    evidence_for_enrichment,
-                    api_key=getattr(self.llm_provider, "api_key", config.MISTRAL_API_KEY),
-                    model=getattr(self.llm_provider, "model", config.MISTRAL_MODEL),
-                )
+                # Use semantic extraction if enabled, otherwise legacy enrichment
+                if self.use_semantic_extraction:
+                    claims = await enrich_evidence_with_semantic_extraction_to_claims(
+                        cleaned_name,
+                        evidence_for_enrichment,
+                        api_key=getattr(self.llm_provider, "api_key", config.MISTRAL_API_KEY),
+                        model=getattr(self.llm_provider, "model", config.MISTRAL_MODEL),
+                    )
+                else:
+                    claims = await enrich_evidence_with_mistral(
+                        cleaned_name,
+                        evidence_for_enrichment,
+                        api_key=getattr(self.llm_provider, "api_key", config.MISTRAL_API_KEY),
+                        model=getattr(self.llm_provider, "model", config.MISTRAL_MODEL),
+                    )
             except Exception as e:
                 logger.warning(f"[ENRICH {cleaned_name}] LLM enrichment failed: {e}")
                 claims = []
