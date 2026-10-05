@@ -14,8 +14,14 @@ DATABASE_URL = os.getenv(
 
 # LLM Provider
 MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY", "")
-MISTRAL_MODEL = os.getenv("MISTRAL_MODEL", "mistral-large-latest")
-MISTRAL_RESEARCH_MODEL = os.getenv("MISTRAL_RESEARCH_MODEL", "mistral-large-latest")
+MISTRAL_MODEL = os.getenv("MISTRAL_MODEL", "labs-leanstral-1-5")
+MISTRAL_RESEARCH_MODEL = os.getenv("MISTRAL_RESEARCH_MODEL", "labs-leanstral-1-5")
+
+# Leanstral Research Agent Limits
+MAX_TOOL_ROUNDS = int(os.getenv("MAX_TOOL_ROUNDS", "8"))
+MAX_SEARCH_CALLS = int(os.getenv("MAX_SEARCH_CALLS", "3"))
+MAX_OPEN_URL_CALLS = int(os.getenv("MAX_OPEN_URL_CALLS", "8"))
+MAX_TOTAL_RETRIEVED_CHARS = int(os.getenv("MAX_TOTAL_RETRIEVED_CHARS", "120000"))
 
 # Logging
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")

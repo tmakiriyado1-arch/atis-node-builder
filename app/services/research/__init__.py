@@ -2,11 +2,22 @@
 
 This module provides the Apps Script search provider for evidence collection,
 semantic extraction services for structured evidence processing,
-and Mistral web research for primary evidence investigation.
+Mistral web research for primary evidence investigation,
+and Leanstral research agent with tool-driven research loop.
 """
 from __future__ import annotations
 
 from app.services.research.apps_script_provider import AppsScriptSearchProvider
+from app.services.research.leanstral_research_agent import (
+    LeanstralResearchAgent,
+    LeanstralResearchResult,
+    Message,
+    ResearchStatus as LeanstralResearchStatus,
+    RetrievalResult,
+    ToolCall,
+    ToolDefinition,
+    ToolResult,
+)
 from app.services.research.mistral_web_research import (
     EntityMatchType,
     EvidenceItem,
@@ -15,7 +26,6 @@ from app.services.research.mistral_web_research import (
     MistralWebResearchProvider,
     RejectionReason,
     ResearchContext,
-    ResearchStatus as MistralResearchStatus,
     SourceAssessment,
     SourceResult,
 )
@@ -36,6 +46,10 @@ __all__ = [
     "EvidenceLevel",
     "EvidenceType",
     "ExtractionResult",
+    "LeanstralResearchAgent",
+    "LeanstralResearchResult",
+    "LeanstralResearchStatus",
+    "Message",
     "MistralResearchResult",
     "MistralResearchStatus",
     "MistralSemanticExtractor",
@@ -45,8 +59,12 @@ __all__ = [
     "ResearchContext",
     "ResearchDocument",
     "ResearchStatus",
+    "RetrievalResult",
     "SearchProvider",
     "SearchResult",
     "SourceAssessment",
     "SourceResult",
+    "ToolCall",
+    "ToolDefinition",
+    "ToolResult",
 ]

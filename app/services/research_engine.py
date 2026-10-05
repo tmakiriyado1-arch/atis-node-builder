@@ -12,6 +12,9 @@ from app.services.research.mistral_enrichment import (
     enrich_evidence_with_mistral,
     enrich_evidence_with_semantic_extraction_to_claims,
 )
+from app.services.research.leanstral_research_agent import (
+    LeanstralResearchAgent,
+)
 from app.services.research.mistral_web_research import (
     MistralWebResearchProvider,
     ResearchContext,
@@ -154,6 +157,15 @@ class ResearchEngine:
         # But skip for test providers to avoid crawling issues
         if self.orchestrator is None and not is_test_provider:
             self.orchestrator = self._create_default_orchestrator(search_provider)
+        
+        # Initialize Leanstral research agent if enabled
+        if self.use_mistral_web_research:
+            self.leanstral_agent = LeanstralResearchAgent(
+                api_key=config.MISTRAL_API_KEY,
+                model=config.MISTRAL_MODEL,
+            )
+        else:
+            self.leanstral_agent = None
         
         # Initialize Mistral web research provider if enabled
         if self.use_mistral_web_research:
@@ -376,12 +388,97 @@ class ResearchEngine:
             return result
         
         # =============================================================================
-        # NEW PRIMARY PATH: Mistral Web Research
+        # NEW PRIMARY PATH: Leanstral Tool-Driven Research
         # =============================================================================
-        # Use Mistral Web Research Provider as the primary research path
-        # This moves the boundary: NORA discovers URLs, Mistral researches them
+        # Use Leanstral Research Agent as the primary research path
+        # This implements the tool-driven research loop: Leanstral emits tool calls, NORA executes them
         
-        if self.use_mistral_web_research and self.mistral_web_research_provider is not None:
+        if self.use_mistral_web_research and self.leanstral_agent is not None:
+            try:
+                logger.info(f"[LEANSTRAL_RESEARCH {cleaned_name}] Starting Leanstral tool-driven research")
+                
+                # Build research task
+                research_task = (
+                    f"Research the entity '{cleaned_name}'. "
+                    f"Determine: 1) What the organization is, "
+                    f"2) Its key relationships, "
+                    f"3) Its stated purpose/focus, "
+                    f"4) Its current status, "
+                    f"5) Official contact information. "
+                    f"Use web discovery and inspect primary sources. "
+                    f"Every factual claim must have a source."
+                )
+                
+                # Perform Leanstral research
+                leanstral_result = await self.leanstral_agent.research(
+                    entity_name=cleaned_name,
+                    entity_type=entity_type,
+                    research_task=research_task,
+                    context=search_context if search_context else None,
+                )
+                
+                logger.info(f"[LEANSTRAL_RESEARCH {cleaned_name}] Leanstral research status={leanstral_result.status.value}")
+                logger.info(f"[LEANSTRAL_RESEARCH {cleaned_name}] tool_rounds={leanstral_result.tool_rounds}, searches={leanstral_result.search_calls}, url_opens={leanstral_result.open_url_calls}")
+                
+                # Convert Leanstral research result to claims
+                claims = []
+                for claim_dict in leanstral_result.claims:
+                    claim = ResearchClaim(
+                        claim=claim_dict.get("claim", ""),
+                        claim_text=claim_dict.get("claim", ""),
+                        field_name="candidate_claim",
+                        source_url=", ".join(claim_dict.get("source_urls", [])),
+                        source_title=None,
+                        evidence_passage="",
+                        source_type="webpage",
+                        confidence=0.8,
+                        extraction_method="leanstral_tool_driven",
+                        extracted_at=datetime.now(),
+                        evidence_urls=claim_dict.get("source_urls", []),
+                        metadata={
+                            "research_method": "leanstral_tool_driven",
+                            "evidence_type": claim_dict.get("evidence_type", "FACT"),
+                        }
+                    )
+                    claims.append(claim)
+                
+                # Update research result with Leanstral research metadata
+                result.metadata = getattr(result, 'metadata', {})
+                result.metadata['research_method'] = 'leanstral_tool_driven'
+                result.metadata['leanstral_status'] = leanstral_result.status.value
+                result.metadata['tool_rounds'] = leanstral_result.tool_rounds
+                result.metadata['search_calls'] = leanstral_result.search_calls
+                result.metadata['open_url_calls'] = leanstral_result.open_url_calls
+                result.metadata['urls_discovered'] = len(leanstral_result.urls_discovered)
+                result.metadata['urls_retrieved'] = len(leanstral_result.urls_retrieved)
+                
+                # Update evidence from Leanstral
+                result.evidence = leanstral_result.evidence
+                
+                # Map Leanstral research status to orchestrator ResearchStatus
+                from app.services.research.leanstral_research_agent import ResearchStatus as LeanstralResearchStatus
+                if leanstral_result.status == LeanstralResearchStatus.COMPLETED:
+                    result.research_status = ResearchStatus.COMPLETE
+                elif leanstral_result.status == LeanstralResearchStatus.INSUFFICIENT:
+                    result.research_status = ResearchStatus.INSUFFICIENT
+                elif leanstral_result.status == LeanstralResearchStatus.INCOMPLETE:
+                    result.research_status = ResearchStatus.DEGRADED
+                elif leanstral_result.status == LeanstralResearchStatus.FAILED:
+                    result.research_status = ResearchStatus.UNAVAILABLE
+                
+                logger.info(f"[ENRICH {cleaned_name}] Leanstral research returned {len(claims)} claims from {len(leanstral_result.sources)} sources")
+                
+            except Exception as e:
+                logger.error(f"[LEANSTRAL_RESEARCH {cleaned_name}] Leanstral research failed: {e}")
+                result.errors.append(f"Leanstral research failed: {e}")
+                # Fall through to Mistral web research path
+                claims = []
+        
+        # =============================================================================
+        # FALLBACK PATH: Mistral Web Research (if Leanstral disabled or failed)
+        # =============================================================================
+        
+        if not claims and self.use_mistral_web_research and self.mistral_web_research_provider is not None:
             # Extract candidate URLs from evidence
             candidate_urls = [ev.url for ev in deduped_evidence if ev.url]
             
