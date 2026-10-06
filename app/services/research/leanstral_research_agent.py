@@ -218,6 +218,10 @@ class LeanstralResearchResult:
     tool_rounds: int = 0
     search_calls: int = 0
     open_url_calls: int = 0
+    successful_searches: int = 0
+    failed_searches: int = 0
+    successful_url_opens: int = 0
+    failed_url_opens: int = 0
     error_message: Optional[str] = None
     started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     completed_at: Optional[datetime] = None
@@ -282,7 +286,7 @@ class LeanstralResearchAgent:
     # Default limits
     DEFAULT_MAX_TOOL_ROUNDS = 8
     DEFAULT_MAX_SEARCH_CALLS = 3
-    DEFAULT_MAX_OPEN_URL_CALLS = 8
+    DEFAULT_MAX_OPEN_URL_CALLS = 6
     DEFAULT_MAX_TOTAL_RETRIEVED_CHARS = 120000
     
     def __init__(
@@ -321,6 +325,10 @@ class LeanstralResearchAgent:
         self.max_search_calls = max_search_calls
         self.max_open_url_calls = max_open_url_calls
         self.max_total_retrieved_chars = max_total_retrieved_chars
+        
+        logger.info(f"[LEANSTRAL_AGENT] Limits: max_tool_rounds={self.max_tool_rounds}, "
+                   f"max_search_calls={self.max_search_calls}, "
+                   f"max_open_url_calls={self.max_open_url_calls}")
         
         self.timeout = timeout
         
@@ -385,14 +393,15 @@ class LeanstralResearchAgent:
         while tool_round < self.max_tool_rounds:
             result.tool_rounds = tool_round + 1
             
-            # Check limits before next call
-            if (result.search_calls >= self.max_search_calls and 
-                result.open_url_calls >= self.max_open_url_calls):
+            # Check limits before next Leanstral call
+            if result.search_calls >= self.max_search_calls:
                 result.status = ResearchStatus.INCOMPLETE
-                result.error_message = (
-                    f"Tool limits reached: searches={result.search_calls}/{self.max_search_calls}, "
-                    f"url_opens={result.open_url_calls}/{self.max_open_url_calls}"
-                )
+                result.error_message = f"Max search calls reached: {result.search_calls}/{self.max_search_calls}"
+                break
+            
+            if result.open_url_calls >= self.max_open_url_calls:
+                result.status = ResearchStatus.INCOMPLETE
+                result.error_message = f"Max open_url calls reached: {result.open_url_calls}/{self.max_open_url_calls}"
                 break
             
             if result.total_retrieved_chars >= self.max_total_retrieved_chars:
@@ -451,6 +460,23 @@ class LeanstralResearchAgent:
             if finish_reason == "tool_calls" and assistant_tool_calls:
                 # Execute each tool call
                 for tool_call in assistant_tool_calls:
+                    # Check limits before each tool execution
+                    if result.search_calls >= self.max_search_calls and tool_call.name == "search_web":
+                        result.status = ResearchStatus.INCOMPLETE
+                        result.error_message = f"Max search calls reached: {result.search_calls}/{self.max_search_calls}"
+                        break
+                    if result.open_url_calls >= self.max_open_url_calls and tool_call.name == "open_url":
+                        result.status = ResearchStatus.INCOMPLETE
+                        result.error_message = f"Max open_url calls reached: {result.open_url_calls}/{self.max_open_url_calls}"
+                        break
+                    if result.total_retrieved_chars >= self.max_total_retrieved_chars:
+                        result.status = ResearchStatus.INCOMPLETE
+                        result.error_message = (
+                            f"Retrieved character limit reached: "
+                            f"{result.total_retrieved_chars}/{self.max_total_retrieved_chars}"
+                        )
+                        break
+                    
                     tool_result = await self._execute_tool(tool_call)
                     
                     if tool_result:
@@ -459,13 +485,29 @@ class LeanstralResearchAgent:
                         # Update counters based on tool type
                         if tool_call.name == "search_web":
                             result.search_calls += 1
+                            if tool_result.ok:
+                                result.successful_searches += 1
+                            else:
+                                result.failed_searches += 1
                         elif tool_call.name == "open_url":
                             result.open_url_calls += 1
+                            if tool_result.ok:
+                                result.successful_url_opens += 1
+                            else:
+                                result.failed_url_opens += 1
                         
                         # Update character count
-                        if tool_result.ok and "content" in tool_result.metadata:
+                        if tool_result.ok and "content_length" in tool_result.metadata:
                             content_len = tool_result.metadata.get("content_length", 0)
                             result.total_retrieved_chars += content_len
+                        
+                        # Log tool result diagnostic before sending to Leanstral
+                        chars_count = tool_result.metadata.get("content_length", 0) if tool_result.ok else 0
+                        logger.info(f"[LEANSTRAL_AGENT] Tool result:\n"
+                                   f"  tool={tool_call.name}\n"
+                                   f"  tool_call_id={tool_call.id}\n"
+                                   f"  ok={tool_result.ok}\n"
+                                   f"  chars={chars_count}")
                         
                         # Add tool result message to conversation
                         messages.append(Message(
@@ -475,11 +517,20 @@ class LeanstralResearchAgent:
                         ))
                     else:
                         # Tool execution failed - add error message
+                        logger.info(f"[LEANSTRAL_AGENT] Tool result:\n"
+                                   f"  tool={tool_call.name}\n"
+                                   f"  tool_call_id={tool_call.id}\n"
+                                   f"  ok=false\n"
+                                   f"  chars=0")
                         messages.append(Message(
                             role="tool",
                             content=json.dumps({"ok": False, "error": "Tool execution failed"}),
                             tool_call_id=tool_call.id,
                         ))
+                
+                # Check if we hit a limit during tool execution
+                if result.status == ResearchStatus.INCOMPLETE:
+                    break
                 
                 tool_round += 1
                 continue
@@ -510,8 +561,10 @@ class LeanstralResearchAgent:
         result.messages = messages
         
         logger.info(f"[LEANSTRAL_AGENT] Research completed: status={result.status.value}, "
-                   f"rounds={result.tool_rounds}, searches={result.search_calls}, "
-                   f"url_opens={result.open_url_calls}, chars={result.total_retrieved_chars}")
+                   f"rounds={result.tool_rounds}, "
+                   f"searches={result.search_calls}(+{result.successful_searches}/-{result.failed_searches}), "
+                   f"url_opens={result.open_url_calls}(+{result.successful_url_opens}/-{result.failed_url_opens}), "
+                   f"chars={result.total_retrieved_chars}")
         
         return result
     
@@ -543,6 +596,21 @@ You must use the provided tools to discover and inspect sources.
 12. If evidence is insufficient, explicitly say so.
 13. Prefer fewer high-quality sources over many weak sources.
 
+## SOURCE PRIORITIZATION
+- Prefer official organization domains (e.g., organization.org, organization.com)
+- Prefer exact-entity matches in URLs
+- Prefer source URLs whose domain matches the entity's known website
+- If a likely official domain appears, inspect it before broadening search
+- Do not repeatedly search when high-quality candidate URLs are already available
+- For an organization, the official site should normally be the first source inspected
+
+## SEARCH BEHAVIOR
+- Never trust search result relevance - treat search as discovery only
+- Search results are NOT authoritative ranking
+- You must evaluate candidate URLs using open_url
+- Never treat a URL returned from search as evidence until open_url successfully retrieves it
+- If the entity metadata already contains a known official URL, use open_url directly
+
 ## TOOLS
 You have access to two tools:
 
@@ -550,11 +618,13 @@ You have access to two tools:
 - Use to discover candidate URLs
 - Returns URL discovery results only
 - Search results are DISCOVERY, not evidence
+- Limit: {self.max_search_calls} calls maximum
 
 ### open_url(url: str)
 - Use to retrieve readable content from a specific URL
 - Returns extracted text content (not raw HTML)
 - Use this to obtain factual evidence
+- Limit: {self.max_open_url_calls} calls maximum
 
 ## OUTPUT REQUIREMENTS
 When you have completed your research, return a JSON object with this structure:
@@ -620,6 +690,14 @@ When you have completed your research, return a JSON object with this structure:
         
         if context:
             task_description += f"\n\nAdditional context: {json.dumps(context, ensure_ascii=False)}"
+        
+        # Add known official URL if available in context
+        known_url = None
+        if context and isinstance(context, dict):
+            known_url = context.get("known_url") or context.get("official_url") or context.get("website")
+        
+        if known_url:
+            task_description += f"\n\nKnown candidate source:\n{known_url}"
         
         return task_description
     
@@ -783,9 +861,17 @@ When you have completed your research, return a JSON object with this structure:
         
         except Exception as e:
             logger.error(f"[LEANSTRAL_AGENT] Search failed: {type(e).__name__}: {e}")
+            error_type = "search_timeout" if "timeout" in str(e).lower() or "gateway" in str(e).lower() else "search_error"
             return ToolResult(
                 tool_call_id=tool_call.id,
-                content=json.dumps({"ok": False, "error": str(e), "query": query}),
+                content=json.dumps({
+                    "ok": False,
+                    "query": query,
+                    "error": {
+                        "type": error_type,
+                        "message": str(e),
+                    },
+                }),
                 ok=False,
                 error=str(e),
             )
@@ -818,16 +904,38 @@ When you have completed your research, return a JSON object with this structure:
         try:
             crawl_result = await self.page_crawler.crawl_url(url)
             
+            # Log detailed retrieval information
+            raw_bytes = len(crawl_result.content) if crawl_result.content else 0
+            extracted_chars = len(crawl_result.content) if crawl_result.content else 0
+            logger.info(f"[LEANSTRAL_AGENT] open_url result:\n"
+                       f"  requested_url={url}\n"
+                       f"  final_url={crawl_result.final_url}\n"
+                       f"  status_code={crawl_result.status_code}\n"
+                       f"  content_type={crawl_result.content_type}\n"
+                       f"  raw_bytes={raw_bytes}\n"
+                       f"  extracted_chars={extracted_chars}")
+            
             if crawl_result.success and crawl_result.content:
                 # Return readable content
+                content_length = len(crawl_result.content)
+                logger.info(f"[LEANSTRAL_AGENT] Tool result:\n"
+                           f"  tool=open_url\n"
+                           f"  tool_call_id={tool_call.id}\n"
+                           f"  ok=true\n"
+                           f"  chars={content_length}")
+                
+                # Ensure all fields are JSON-serializable
+                final_url = crawl_result.final_url if isinstance(crawl_result.final_url, str) else str(crawl_result.final_url)
+                content_type = crawl_result.content_type if isinstance(crawl_result.content_type, str) else str(crawl_result.content_type)
+                
                 return ToolResult(
                     tool_call_id=tool_call.id,
                     content=json.dumps({
                         "ok": True,
                         "url": url,
-                        "final_url": crawl_result.final_url,
+                        "final_url": final_url,
                         "http_status": crawl_result.status_code,
-                        "content_type": crawl_result.content_type,
+                        "content_type": content_type,
                         "title": crawl_result.title,
                         "content": crawl_result.content,
                         "success": True,
@@ -835,42 +943,87 @@ When you have completed your research, return a JSON object with this structure:
                     ok=True,
                     metadata={
                         "url": url,
-                        "final_url": crawl_result.final_url,
+                        "final_url": final_url,
                         "http_status": crawl_result.status_code,
-                        "content_length": len(crawl_result.content),
+                        "content_length": content_length,
                     },
                 )
             else:
-                # Return error
+                # Extraction failed - return structured error
+                error_type = "extraction_error" if crawl_result.success and not crawl_result.content else \
+                           "http_error" if crawl_result.status_code >= 400 else \
+                           "connection_error"
+                error_msg = crawl_result.error or "Retrieval failed"
+                if crawl_result.success and not crawl_result.content:
+                    error_msg = "Extraction returned empty content"
+                
+                logger.warning(f"[LEANSTRAL_AGENT] open_url failed:\n"
+                             f"  requested_url={url}\n"
+                             f"  final_url={crawl_result.final_url}\n"
+                             f"  status_code={crawl_result.status_code}\n"
+                             f"  error_type={error_type}\n"
+                             f"  error={error_msg}")
+                
+                logger.info(f"[LEANSTRAL_AGENT] Tool result:\n"
+                           f"  tool=open_url\n"
+                           f"  tool_call_id={tool_call.id}\n"
+                           f"  ok=false\n"
+                           f"  chars=0")
+                
+                # Ensure all fields are JSON-serializable
+                final_url = crawl_result.final_url if isinstance(crawl_result.final_url, str) else str(crawl_result.final_url)
+                content_type = crawl_result.content_type if isinstance(crawl_result.content_type, str) else str(crawl_result.content_type)
+                
                 return ToolResult(
                     tool_call_id=tool_call.id,
                     content=json.dumps({
                         "ok": False,
                         "url": url,
-                        "error": crawl_result.error or "Retrieval failed",
+                        "final_url": final_url,
                         "http_status": crawl_result.status_code,
-                        "final_url": crawl_result.final_url,
+                        "content_type": content_type,
+                        "error": {
+                            "type": error_type,
+                            "message": error_msg,
+                        },
                     }),
                     ok=False,
-                    error=crawl_result.error or "Retrieval failed",
+                    error=error_msg,
                     metadata={
                         "url": url,
+                        "final_url": final_url,
                         "http_status": crawl_result.status_code,
-                        "error": crawl_result.error,
+                        "error": error_msg,
+                        "error_type": error_type,
+                        "content_length": 0,
                     },
                 )
         
         except Exception as e:
             logger.error(f"[LEANSTRAL_AGENT] URL retrieval failed: {type(e).__name__}: {e}")
+            logger.info(f"[LEANSTRAL_AGENT] Tool result:\n"
+                       f"  tool=open_url\n"
+                       f"  tool_call_id={tool_call.id}\n"
+                       f"  ok=false\n"
+                       f"  chars=0")
             return ToolResult(
                 tool_call_id=tool_call.id,
                 content=json.dumps({
                     "ok": False,
                     "url": url,
-                    "error": str(e),
+                    "error": {
+                        "type": "retrieval_error",
+                        "message": str(e),
+                    },
                 }),
                 ok=False,
                 error=str(e),
+                metadata={
+                    "url": url,
+                    "error": str(e),
+                    "error_type": "retrieval_error",
+                    "content_length": 0,
+                },
             )
     
     async def _parse_final_response(

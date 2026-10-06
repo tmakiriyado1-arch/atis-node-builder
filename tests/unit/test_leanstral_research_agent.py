@@ -494,7 +494,8 @@ async def test_tool_limit_enforcement(mock_leanstral_agent):
         
         # Verify limits were enforced
         assert result.status == ResearchStatus.INCOMPLETE
-        assert "limit" in result.error_message.lower() or "exceeded" in result.error_message.lower()
+        assert ("limit" in result.error_message.lower() or "exceeded" in result.error_message.lower() or 
+                "max search calls reached" in result.error_message.lower())
         assert result.tool_rounds <= 2
 
 

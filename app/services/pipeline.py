@@ -86,13 +86,17 @@ class EntityPipelineService:
             )
         
         # ResearchEngine will use the orchestrator internally
-        # FIX: Enable semantic extraction and Mistral web research by default
+        # For Leanstral tool-driven research mode:
+        # - use_leanstral=True: Enable Leanstral tool-driven research (primary path)
+        # - use_mistral_web_research=False: Disable old MISTRAL_WEB_RESEARCH fallback
+        # - orchestrator is created but not used for main research path in Leanstral mode
         self.research_engine = research_engine or ResearchEngine(
             search_provider=self.search_provider,
             llm_provider=self.llm_provider,
             orchestrator=self.orchestrator,
             use_semantic_extraction=True,
-            use_mistral_web_research=True,
+            use_mistral_web_research=False,
+            use_leanstral=True,
         )
         self.classifier = classifier or ClaimClassifier(registry=self.registry, resolver=self.resolver)
         self.node_builder = node_builder or NodeDraftBuilder(registry=self.registry, resolver=self.resolver)

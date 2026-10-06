@@ -131,6 +131,11 @@ class ResearchEngine:
     This engine now uses a SearchOrchestrator with multiple providers for
     production-grade reliability. If no orchestrator is provided, it creates
     one with the default provider set.
+    
+    For Leanstral tool-driven research mode:
+    - Set use_leanstral=True and use_mistral_web_research=False
+    - This disables the old SearchOrchestrator crawl/rank phase
+    - This disables the old MISTRAL_WEB_RESEARCH fallback path
     """
 
     def __init__(
@@ -139,13 +144,15 @@ class ResearchEngine:
         llm_provider: Optional[Any] = None,
         orchestrator: Optional[SearchOrchestrator] = None,
         use_semantic_extraction: bool = True,
-        use_mistral_web_research: bool = True,
+        use_mistral_web_research: bool = False,
+        use_leanstral: bool = True,
     ):
         self.search_provider = search_provider
         self.llm_provider = llm_provider
         self.orchestrator = orchestrator
         self.use_semantic_extraction = use_semantic_extraction
         self.use_mistral_web_research = use_mistral_web_research
+        self.use_leanstral = use_leanstral
         
         # PHASE 19: Detect test providers and skip orchestrator creation
         is_test_provider = False
@@ -155,11 +162,16 @@ class ResearchEngine:
         
         # If no orchestrator provided, create one with default providers
         # But skip for test providers to avoid crawling issues
-        if self.orchestrator is None and not is_test_provider:
+        # Also skip if using Leanstral-only mode (no old orchestrator needed)
+        if self.orchestrator is None and not is_test_provider and not use_leanstral:
+            self.orchestrator = self._create_default_orchestrator(search_provider)
+        elif self.orchestrator is None and not is_test_provider and use_leanstral:
+            # In Leanstral mode, we still create an orchestrator for discovery if needed
+            # but it won't be used for the main research path
             self.orchestrator = self._create_default_orchestrator(search_provider)
         
         # Initialize Leanstral research agent if enabled
-        if self.use_mistral_web_research:
+        if self.use_leanstral:
             self.leanstral_agent = LeanstralResearchAgent(
                 api_key=config.MISTRAL_API_KEY,
                 model=config.MISTRAL_MODEL,
@@ -167,8 +179,8 @@ class ResearchEngine:
         else:
             self.leanstral_agent = None
         
-        # Initialize Mistral web research provider if enabled
-        if self.use_mistral_web_research:
+        # Initialize Mistral web research provider if enabled (and not using Leanstral)
+        if self.use_mistral_web_research and not self.use_leanstral:
             self.mistral_web_research_provider = MistralWebResearchProvider(
                 api_key=config.MISTRAL_API_KEY,
                 model=config.MISTRAL_RESEARCH_MODEL,
@@ -392,8 +404,9 @@ class ResearchEngine:
         # =============================================================================
         # Use Leanstral Research Agent as the primary research path
         # This implements the tool-driven research loop: Leanstral emits tool calls, NORA executes them
+        # For Leanstral mode, we skip the old SearchOrchestrator crawl/rank phase
         
-        if self.use_mistral_web_research and self.leanstral_agent is not None:
+        if self.use_leanstral and self.leanstral_agent is not None:
             try:
                 logger.info(f"[LEANSTRAL_RESEARCH {cleaned_name}] Starting Leanstral tool-driven research")
                 
@@ -477,8 +490,10 @@ class ResearchEngine:
         # =============================================================================
         # FALLBACK PATH: Mistral Web Research (if Leanstral disabled or failed)
         # =============================================================================
+        # For Leanstral mode, we do NOT fall back to MISTRAL_WEB_RESEARCH
+        # The old architecture should not compete with Leanstral tool-driven research
         
-        if not claims and self.use_mistral_web_research and self.mistral_web_research_provider is not None:
+        if not claims and self.use_mistral_web_research and self.mistral_web_research_provider is not None and not self.use_leanstral:
             # Extract candidate URLs from evidence
             candidate_urls = [ev.url for ev in deduped_evidence if ev.url]
             
