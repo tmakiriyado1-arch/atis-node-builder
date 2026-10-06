@@ -161,6 +161,7 @@ RELATIONSHIP_PREDICATES: FrozenSet[str] = frozenset([
     "manages",
     "oversees",
     "supports",
+    "supported_by",
     "operates",
     "provides",
     "governs",
