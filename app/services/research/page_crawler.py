@@ -179,9 +179,20 @@ class PageCrawler:
                 # Get raw content
                 raw_content = response.text
                 
-                # Limit content size
+                # Limit content size - but ensure we get at least the head section
                 if len(raw_content) > self.max_content_length:
-                    raw_content = raw_content[:self.max_content_length]
+                    # Find </head> and <main positions to ensure we include content
+                    head_end_pos = raw_content.lower().find('</head>')
+                    main_start_pos = raw_content.lower().find('<main')
+                    
+                    # If main tag exists beyond our limit, extend to include it
+                    if main_start_pos > 0 and main_start_pos > self.max_content_length:
+                        raw_content = raw_content[:max(self.max_content_length, main_start_pos + 50000)]
+                    elif head_end_pos > 0 and head_end_pos < self.max_content_length:
+                        # Extend to include </head> + some body content
+                        raw_content = raw_content[:max(self.max_content_length, head_end_pos + 1000)]
+                    else:
+                        raw_content = raw_content[:self.max_content_length]
                 
                 # Extract title and content
                 title, content, html_content = self._extract_content(raw_content, content_type, final_url)
@@ -408,7 +419,10 @@ class PageCrawler:
                     content = body.get_text().strip()
             
             if not content:
-                content = html[:1000]  # Last resort: first 1000 chars
+                # Last resort: extract text from entire HTML
+                content = soup.get_text().strip()
+                if not content:
+                    content = html[:1000]  # Absolute last resort
             
             # Clean the extracted content
             content = clean_text(content)
@@ -431,10 +445,9 @@ class PageCrawler:
         # First, remove Wikipedia-specific navigation and metadata elements
         self._remove_wikipedia_artifacts(soup)
         
-        # Remove site builder artifacts (Wix, Squarespace, etc.)
-        self._remove_site_builder_artifacts(soup)
-        
-        # Try to find main content section
+        # Try to find main content section BEFORE removing site builder artifacts
+        # This is important for Wix/Squarespace sites where the main content
+        # is inside elements with wix classes
         main_selectors = [
             "main",
             "article",
@@ -460,6 +473,17 @@ class PageCrawler:
             ".content-main",
         ]
         
+        for selector in main_selectors:
+            main = soup.select_one(selector)
+            if main:
+                text = main.get_text().strip()
+                if len(text) > 100:  # Only return if substantial
+                    return clean_text(text)
+        
+        # Remove site builder artifacts (Wix, Squarespace, etc.)
+        self._remove_site_builder_artifacts(soup)
+        
+        # Try again after removing site builder artifacts
         for selector in main_selectors:
             main = soup.select_one(selector)
             if main:
@@ -554,12 +578,8 @@ class PageCrawler:
         This removes elements commonly found in site-builder generated pages
         that contain boilerplate, navigation, or non-content elements.
         """
-        # Remove Wix-specific elements
+        # Remove Wix-specific elements (but NOT data-testid elements which may contain content)
         for element in soup.find_all(class_=lambda x: x and ("wix" in x.lower() or "WIX" in x)):
-            element.decompose()
-        
-        # Remove Wix data elements
-        for element in soup.find_all(attrs={"data-testid": True}):
             element.decompose()
         
         # Remove Squarespace-specific elements

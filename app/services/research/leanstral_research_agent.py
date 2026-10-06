@@ -509,12 +509,48 @@ class LeanstralResearchAgent:
                                    f"  ok={tool_result.ok}\n"
                                    f"  chars={chars_count}")
                         
+                        # DIAGNOSTIC: Log TOOL_MESSAGE construction (Boundary C)
+                        # tool_result.content is a JSON string - we need to check the actual content inside
+                        tool_content_str = tool_result.content
+                        tool_content_chars = len(tool_content_str)
+                        tool_content_preview = tool_content_str[:500]
+                        logger.info(f"[LEANSTRAL_AGENT] TOOL_MESSAGE\n"
+                                   f"tool_call_id={tool_call.id}\n"
+                                   f"content_chars={tool_content_chars}\n"
+                                   f"content_preview={tool_content_preview}")
+                        
                         # Add tool result message to conversation
                         messages.append(Message(
                             role="tool",
                             content=tool_result.content,
                             tool_call_id=tool_call.id,
                         ))
+                        
+                        # DIAGNOSTIC: Log FINAL_MESSAGES after adding tool message (Boundary D)
+                        last_msg = messages[-1]
+                        last_content = last_msg.content if last_msg.content else ""
+                        last_content_chars = len(last_content)
+                        last_content_preview = last_content[:500]
+                        logger.info(f"[LEANSTRAL_AGENT] FINAL_MESSAGES\n"
+                                   f"message_count={len(messages)}\n"
+                                   f"last_role={last_msg.role}\n"
+                                   f"last_tool_call_id={last_msg.tool_call_id}\n"
+                                   f"last_content_chars={last_content_chars}\n"
+                                   f"last_content_preview={last_content_preview}")
+                        
+                        # EXPLICIT ASSERTIONS: Verify tool message integrity before next Mistral call
+                        if tool_call.name == "open_url":
+                            try:
+                                # tool_result.content is now plain text (readable content)
+                                # Check the actual tool message that was added to the conversation
+                                assert last_msg.role == "tool", f"Tool message role is {last_msg.role}, expected 'tool'"
+                                assert last_msg.tool_call_id == tool_call.id, f"Tool call ID mismatch: {last_msg.tool_call_id} != {tool_call.id}"
+                                assert last_msg.content is not None, f"Tool message content is None! tool_call_id={tool_call.id}"
+                                assert len(last_msg.content.strip()) > 0, f"Tool message content is empty! tool_call_id={tool_call.id}, content='{last_msg.content}'"
+                                logger.info(f"[LEANSTRAL_AGENT] ASSERTION_PASSED: tool message validated for {tool_call.id}")
+                            except AssertionError as e:
+                                logger.error(f"[LEANSTRAL_AGENT] ASSERTION_FAILED: {e}")
+                                raise
                     else:
                         # Tool execution failed - add error message
                         logger.info(f"[LEANSTRAL_AGENT] Tool result:\n"
@@ -524,7 +560,7 @@ class LeanstralResearchAgent:
                                    f"  chars=0")
                         messages.append(Message(
                             role="tool",
-                            content=json.dumps({"ok": False, "error": "Tool execution failed"}),
+                            content=f"Error: Tool execution failed for {tool_call.name}",
                             tool_call_id=tool_call.id,
                         ))
                 
@@ -735,6 +771,37 @@ When you have completed your research, return a JSON object with this structure:
             }
         ]
         
+        # DIAGNOSTIC: Log FINAL_MESSAGES before Mistral API call
+        message_count = len(messages)
+        if messages:
+            last_msg = messages[-1]
+            last_content = last_msg.content if last_msg.content else ""
+            last_content_chars = len(last_content)
+            last_content_preview = last_content[:500] if last_content else ""
+            last_tool_call_id = last_msg.tool_call_id if hasattr(last_msg, 'tool_call_id') else None
+            logger.info(f"[LEANSTRAL_AGENT] FINAL_MESSAGES_BEFORE_API\n"
+                       f"message_count={message_count}\n"
+                       f"last_role={last_msg.role}\n"
+                       f"last_tool_call_id={last_tool_call_id}\n"
+                       f"last_content_chars={last_content_chars}\n"
+                       f"last_content_preview={last_content_preview}")
+        
+        # DIAGNOSTIC: Serialize full messages array (truncated)
+        try:
+            import copy
+            messages_for_log = []
+            for m in messages:
+                msg_dict = m.to_dict()
+                if msg_dict.get("content"):
+                    content = msg_dict["content"]
+                    if isinstance(content, str) and len(content) > 500:
+                        msg_dict = copy.deepcopy(msg_dict)
+                        msg_dict["content"] = content[:500] + "...[TRUNCATED]"
+                messages_for_log.append(msg_dict)
+            logger.info(f"[LEANSTRAL_AGENT] MISTRAL_REQUEST_MESSAGES\n{json.dumps(messages_for_log, indent=2)}")
+        except Exception as e:
+            logger.warning(f"[LEANSTRAL_AGENT] Failed to serialize messages for diagnostic: {e}")
+        
         payload = {
             "model": self.model,
             "messages": [m.to_dict() for m in messages],
@@ -791,7 +858,7 @@ When you have completed your research, return a JSON object with this structure:
                 logger.error(f"[LEANSTRAL_AGENT] Unknown tool: {tool_call.name}")
                 return ToolResult(
                     tool_call_id=tool_call.id,
-                    content=json.dumps({"ok": False, "error": f"Unknown tool: {tool_call.name}"}),
+                    content=f"Error: Unknown tool: {tool_call.name}",
                     ok=False,
                     error=f"Unknown tool: {tool_call.name}",
                 )
@@ -799,7 +866,7 @@ When you have completed your research, return a JSON object with this structure:
             logger.error(f"[LEANSTRAL_AGENT] Tool execution failed: {type(e).__name__}: {e}")
             return ToolResult(
                 tool_call_id=tool_call.id,
-                content=json.dumps({"ok": False, "error": str(e)}),
+                content=f"Error: {str(e)}",
                 ok=False,
                 error=str(e),
             )
@@ -845,16 +912,12 @@ When you have completed your research, return a JSON object with this structure:
             # Store discovered URLs
             # Note: We'll update the result object later
             
+            # Return readable search results
+            readable_results = f"Search query: {query}\nFound {len(urls)} results:\n\n" + "\n".join(urls)
+            
             return ToolResult(
                 tool_call_id=tool_call.id,
-                content=json.dumps({
-                    "ok": True,
-                    "query": query,
-                    "results": [
-                        {"url": url} for url in urls
-                    ],
-                    "count": len(urls),
-                }),
+                content=readable_results,
                 ok=True,
                 metadata={"query": query, "urls_found": len(urls)},
             )
@@ -862,16 +925,10 @@ When you have completed your research, return a JSON object with this structure:
         except Exception as e:
             logger.error(f"[LEANSTRAL_AGENT] Search failed: {type(e).__name__}: {e}")
             error_type = "search_timeout" if "timeout" in str(e).lower() or "gateway" in str(e).lower() else "search_error"
+            readable_error = f"Search query: {query}\nError: {str(e)}"
             return ToolResult(
                 tool_call_id=tool_call.id,
-                content=json.dumps({
-                    "ok": False,
-                    "query": query,
-                    "error": {
-                        "type": error_type,
-                        "message": str(e),
-                    },
-                }),
+                content=readable_error,
                 ok=False,
                 error=str(e),
             )
@@ -893,16 +950,34 @@ When you have completed your research, return a JSON object with this structure:
         if not url:
             return ToolResult(
                 tool_call_id=tool_call.id,
-                content=json.dumps({"ok": False, "error": "URL is required"}),
+                content="Error: URL is required",
                 ok=False,
                 error="URL is required",
             )
+        
+        # DIAGNOSTIC: Log OPEN_URL_CALL
+        logger.info(f"[LEANSTRAL_AGENT] OPEN_URL_CALL\n"
+                   f"id={tool_call.id}\n"
+                   f"name=open_url\n"
+                   f"arguments={json.dumps(tool_call.arguments)}")
         
         logger.info(f"[LEANSTRAL_AGENT] Opening URL: {url}")
         
         # Execute retrieval using PageCrawler
         try:
             crawl_result = await self.page_crawler.crawl_url(url)
+            
+            # DIAGNOSTIC: Log PageCrawler result (Boundary A)
+            crawler_content = crawl_result.content if crawl_result.content else ""
+            crawler_chars = len(crawler_content)
+            crawler_preview = crawler_content[:500] if crawler_content else ""
+            logger.info(f"[LEANSTRAL_AGENT] PAGE_CRAWLER_RESULT\n"
+                       f"  url={url}\n"
+                       f"  final_url={crawl_result.final_url}\n"
+                       f"  status_code={crawl_result.status_code}\n"
+                       f"  success={crawl_result.success}\n"
+                       f"  content_chars={crawler_chars}\n"
+                       f"  content_preview={crawler_preview}")
             
             # Log detailed retrieval information
             raw_bytes = len(crawl_result.content) if crawl_result.content else 0
@@ -928,23 +1003,30 @@ When you have completed your research, return a JSON object with this structure:
                 final_url = crawl_result.final_url if isinstance(crawl_result.final_url, str) else str(crawl_result.final_url)
                 content_type = crawl_result.content_type if isinstance(crawl_result.content_type, str) else str(crawl_result.content_type)
                 
+                # DIAGNOSTIC: Log OPEN_URL_RETURN (Boundary B)
+                # The content we return should be the readable text, not JSON
+                logger.info(f"[LEANSTRAL_AGENT] OPEN_URL_RETURN\n"
+                           f"id={tool_call.id}\n"
+                           f"return_type=str\n"
+                           f"content_chars={content_length}\n"
+                           f"content_preview={crawl_result.content[:500]}")
+                
+                # CRITICAL FIX: Return the actual readable content text directly,
+                # NOT wrapped in JSON. The Mistral API expects the tool message
+                # content to be the actual text, matching the known-good protocol.
+                # Format: "URL: <url>\nPage title: <title>\n\n<content>"
+                readable_content = f"URL: {url}\nPage title: {crawl_result.title}\n\n{crawl_result.content}"
+                
                 return ToolResult(
                     tool_call_id=tool_call.id,
-                    content=json.dumps({
-                        "ok": True,
-                        "url": url,
-                        "final_url": final_url,
-                        "http_status": crawl_result.status_code,
-                        "content_type": content_type,
-                        "title": crawl_result.title,
-                        "content": crawl_result.content,
-                        "success": True,
-                    }),
+                    content=readable_content,
                     ok=True,
                     metadata={
                         "url": url,
                         "final_url": final_url,
                         "http_status": crawl_result.status_code,
+                        "content_type": content_type,
+                        "title": crawl_result.title,
                         "content_length": content_length,
                     },
                 )
@@ -964,6 +1046,13 @@ When you have completed your research, return a JSON object with this structure:
                              f"  error_type={error_type}\n"
                              f"  error={error_msg}")
                 
+                # DIAGNOSTIC: Log OPEN_URL_RETURN for error case
+                logger.info(f"[LEANSTRAL_AGENT] OPEN_URL_RETURN\n"
+                           f"id={tool_call.id}\n"
+                           f"return_type=str\n"
+                           f"content_chars=0\n"
+                           f"content_preview=Error: {error_msg}")
+                
                 logger.info(f"[LEANSTRAL_AGENT] Tool result:\n"
                            f"  tool=open_url\n"
                            f"  tool_call_id={tool_call.id}\n"
@@ -974,25 +1063,19 @@ When you have completed your research, return a JSON object with this structure:
                 final_url = crawl_result.final_url if isinstance(crawl_result.final_url, str) else str(crawl_result.final_url)
                 content_type = crawl_result.content_type if isinstance(crawl_result.content_type, str) else str(crawl_result.content_type)
                 
+                # Return readable error message
+                readable_error = f"URL: {url}\nError: {error_msg}"
+                
                 return ToolResult(
                     tool_call_id=tool_call.id,
-                    content=json.dumps({
-                        "ok": False,
-                        "url": url,
-                        "final_url": final_url,
-                        "http_status": crawl_result.status_code,
-                        "content_type": content_type,
-                        "error": {
-                            "type": error_type,
-                            "message": error_msg,
-                        },
-                    }),
+                    content=readable_error,
                     ok=False,
                     error=error_msg,
                     metadata={
                         "url": url,
                         "final_url": final_url,
                         "http_status": crawl_result.status_code,
+                        "content_type": content_type,
                         "error": error_msg,
                         "error_type": error_type,
                         "content_length": 0,
@@ -1001,21 +1084,26 @@ When you have completed your research, return a JSON object with this structure:
         
         except Exception as e:
             logger.error(f"[LEANSTRAL_AGENT] URL retrieval failed: {type(e).__name__}: {e}")
+            
+            # DIAGNOSTIC: Log OPEN_URL_RETURN for exception case
+            logger.info(f"[LEANSTRAL_AGENT] OPEN_URL_RETURN\n"
+                       f"id={tool_call.id}\n"
+                       f"return_type=str\n"
+                       f"content_chars=0\n"
+                       f"content_preview=Error: {str(e)}")
+            
             logger.info(f"[LEANSTRAL_AGENT] Tool result:\n"
                        f"  tool=open_url\n"
                        f"  tool_call_id={tool_call.id}\n"
                        f"  ok=false\n"
                        f"  chars=0")
+            
+            # Return readable error message
+            readable_error = f"URL: {url}\nError: {str(e)}"
+            
             return ToolResult(
                 tool_call_id=tool_call.id,
-                content=json.dumps({
-                    "ok": False,
-                    "url": url,
-                    "error": {
-                        "type": "retrieval_error",
-                        "message": str(e),
-                    },
-                }),
+                content=readable_error,
                 ok=False,
                 error=str(e),
                 metadata={
