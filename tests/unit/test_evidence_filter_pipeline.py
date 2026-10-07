@@ -516,8 +516,11 @@ class TestZERAEvidenceFilter:
         # Should have 0 related records (no relationship evidence in this set)
         # (This is fine - not all entities have related evidence)
         
-        # Should have 2 irrelevant records (navigation, generic text)
-        assert len(irrelevant) >= 2, f"Expected at least 2 IRRELEVANT records, got {len(irrelevant)}"
+        # Should have 1 irrelevant record (navigation text)
+        # Note: With the fix, evidence that mentions ZERA is classified as DIRECT,
+        # so "Home About Us Regulations Contact Us" which doesn't mention ZERA
+        # is correctly classified as IRRELEVANT
+        assert len(irrelevant) >= 1, f"Expected at least 1 IRRELEVANT record, got {len(irrelevant)}"
     
     @pytest.mark.asyncio
     async def test_extract_atomic_claims_zera(

@@ -418,6 +418,16 @@ class EvidenceFilterPipeline:
             return RelevanceClassification.RELATED
         
         # Check for IRRELEVANT: discard patterns
+        # IMPORTANT: Only mark as irrelevant if text does NOT reference the target entity
+        # If text mentions the target entity, it should be classified as DIRECT or RELATED,
+        # not IRRELEVANT. Irrelevant patterns (boilerplate, nav, etc.) should only catch
+        # text that doesn't mention the entity at all.
+        if self._contains_entity_reference(text_lower, target_lower):
+            # Text mentions the target entity but didn't match DIRECT or RELATED
+            # This means our DIRECT/RELATED checks are too strict for this evidence
+            # Conservative: treat as DIRECT since it references the entity
+            return RelevanceClassification.DIRECT
+        
         if self._is_irrelevant_evidence(text, text_lower):
             return RelevanceClassification.IRRELEVANT
         
