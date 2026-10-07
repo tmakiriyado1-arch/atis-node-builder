@@ -450,7 +450,20 @@ Required: Return ONLY valid JSON, no other text."""
             choices = data.get("choices", [])
             if choices:
                 content = choices[0].get("message", {}).get("content", "")
-                return content
+                # Ensure content is always a string or None
+                # Mistral API can return non-string types (e.g., [] for empty content)
+                if isinstance(content, str):
+                    return content
+                elif content is None:
+                    return None
+                else:
+                    # Non-string, non-None content (e.g., list, dict)
+                    # Don't disguise as JSON - return None to trigger fallback
+                    logger.warning(
+                        f"[LLM_RANKER] Unexpected content type {type(content).__name__}, "
+                        f"expected str or None"
+                    )
+                    return None
             
             return None
         except Exception as e:
