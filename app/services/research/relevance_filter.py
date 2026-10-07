@@ -109,27 +109,56 @@ class RelevanceFilter:
     - Thin content (pages with insufficient meaningful text)
     """
 
-    RELEVANCE_FILTER_PROMPT = """You are a relevance filter for entity research. Given an entity name and a set of evidence items (URL + extracted text), determine which items are actually about the target entity.
+    RELEVANCE_FILTER_PROMPT = """You are NORA's semantic source-relevance classifier.
+
+Your task is to determine whether a crawled webpage is genuinely relevant
+to research about the TARGET ENTITY.
+
+The target entity does NOT need to be mentioned literally in the page body.
+
+Use all supplied evidence:
+1. canonical entity name
+2. URL
+3. domain
+4. page title
+5. extracted page content
+
+A page may be relevant even when the canonical entity name does not
+appear in the body. For example, a page on the official domain whose title
+and content clearly describe the institution may be relevant even if the
+institution's full name is omitted from the body.
+
+Do not use outside knowledge to invent identity. Only use the information
+provided in the evidence text.
+
+Do not mark a page relevant merely because it contains a generic topic
+associated with the entity. The page must be ABOUT the target entity.
+
+Distinguish:
+- "about the target" vs "mentions the target"
+- "same organization/domain" vs "unrelated organization"
+
+For each evidence item, return:
+- url: the URL
+- relevant: true/false (is this page genuinely about the target entity?)
+- reason: brief explanation of why
+- confidence: 0.0-1.0 (how confident are you?)
+- identity_basis: brief explanation of identity assessment (e.g., "official-domain + title + institutional context", "page content describes the same institution using an abbreviated name", "unrelated organization despite similar terminology")
+
+Return as JSON array of objects.
 
 Entity: {entity_name}
 
 Evidence items:
 {evidence_items}
 
-For each evidence item, return:
-- url: the URL
-- relevant: true/false (is this about the target entity?)
-- reason: brief explanation
-- confidence: 0.0-1.0 (how confident are you?)
-
-Return as JSON array of objects.
-
 Rules:
-- Be strict: only mark as relevant if the evidence clearly discusses the target entity
-- Consider the entity name, variations, and common abbreviations
-- Look for direct mentions, descriptions, or clear contextual relevance
+- Be strict but not rigid: a page can be relevant without literal name match
+- Consider URL, domain, title, and content together
+- Look for direct mentions, descriptions, aliases, abbreviations, or clear contextual identity
 - Mark as irrelevant if the page is a block page, error page, or has no meaningful content
-- Mark as irrelevant if the page is about a different person, organization, or topic"""
+- Mark as irrelevant if the page is about a different person, organization, or topic
+- Only use the evidence provided, do not invent facts from pretrained knowledge"""
 
     def __init__(
         self,
@@ -184,11 +213,25 @@ Rules:
     ) -> tuple[List[EvidenceRecord], List[EvidenceRecord]]:
         """Pre-filter evidence by quality metrics before LLM filtering.
         
-        This removes evidence that is clearly unusable without needing LLM:
-        - Empty or very thin content
-        - Block pages
-        - Error pages
-        - Unusable evidence status
+        Deterministic rejection BEFORE the LLM should be limited to clearly unusable material:
+        - completely empty content
+        - explicit access-denied/block page
+        - explicit 404/error page
+        - obvious CAPTCHA/security challenge
+        - genuinely unusable crawler output
+        
+        Do NOT reject merely because:
+        - the content is short
+        - the target name isn't present
+        - the page was classified SOFT_404 solely because of a simplistic heuristic
+        
+        A short page may still contain useful identity information through:
+        - URL
+        - title
+        - domain
+        - content
+        
+        The LLM must be allowed to evaluate those signals.
         
         Returns:
             (filtered_out, kept_for_llm)
@@ -201,44 +244,32 @@ Rules:
                 filtered_out.append(record)
                 continue
             
-            # Check evidence status
-            if hasattr(record, 'evidence_status'):
-                if record.evidence_status == EvidenceStatus.UNUSABLE:
-                    filtered_out.append(record)
-                    continue
-            
-            # Check extraction quality
-            if hasattr(record, 'extraction_quality'):
-                if record.extraction_quality in (
-                    ExtractionQuality.EMPTY,
-                    ExtractionQuality.BLOCK_PAGE,
-                    ExtractionQuality.ERROR_PAGE,
-                    ExtractionQuality.JS_SHELL,
-                    ExtractionQuality.NAVIGATION,
-                    ExtractionQuality.SOFT_404,
-                ):
-                    filtered_out.append(record)
-                    continue
-            
-            # Get content for length check
+            # Get content for checks
             text = getattr(record, 'normalized_text', None) or \
                   getattr(record, 'content', None) or \
                   record.snippet or ""
             
-            # Check for block page content
+            # Check for completely empty content
+            if not text or not text.strip():
+                filtered_out.append(record)
+                continue
+            
             text_lower = text.lower()
+            
+            # Check for explicit block page content
             is_block_page = any(indicator in text_lower for indicator in BLOCK_PAGE_INDICATORS)
+            
+            # Check for explicit error page content
             is_error_page = any(indicator in text_lower for indicator in ERROR_PAGE_INDICATORS)
             
+            # Only filter out if explicitly a block or error page
+            # Do NOT filter based on extraction quality classifications alone
             if is_block_page or is_error_page:
                 filtered_out.append(record)
                 continue
             
-            # Check minimum content length
-            if len(text.strip()) < self.min_content_length:
-                filtered_out.append(record)
-                continue
-            
+            # Keep all other evidence for LLM evaluation
+            # This includes short content, SOFT_404, etc. - the LLM should decide
             kept.append(record)
         
         return filtered_out, kept
@@ -259,6 +290,8 @@ Rules:
         Returns:
             RelevanceFilterResult with filtered evidence and results
         """
+        from app.logging import logger
+        
         if not evidence_records:
             return RelevanceFilterResult(
                 relevant_evidence=[],
@@ -268,11 +301,23 @@ Rules:
                 kept_count=0,
             )
         
+        logger.info(f"[RELEVANCE_FILTER] entity={entity_name} input={len(evidence_records)}")
+        
         # Step 1: Pre-filter by quality
         quality_filtered, for_llm = self._pre_filter_by_quality(evidence_records)
         
+        # Log quality filter results
+        if quality_filtered:
+            for record in quality_filtered:
+                if record:
+                    text = getattr(record, 'normalized_text', None) or \
+                          getattr(record, 'content', None) or \
+                          record.snippet or ""
+                    logger.info(f"[RELEVANCE_FILTER] QUALITY_FILTERED url={record.url[:80]} content_length={len(text)} reason=block_or_error_page")
+        
         # If all filtered by quality, return early
         if not for_llm:
+            logger.info(f"[RELEVANCE_FILTER] All evidence filtered by quality, returning early")
             return RelevanceFilterResult(
                 relevant_evidence=[],
                 irrelevant_evidence=list(evidence_records),
@@ -313,6 +358,12 @@ Rules:
                         if record.url == result.url:
                             irrelevant_evidence.append(record)
                             break
+        
+        # Log final results
+        logger.info(f"[RELEVANCE_FILTER] llm_evaluated={len(for_llm)} relevant={len(relevant_evidence)} irrelevant={len(irrelevant_evidence)}")
+        
+        for result in results:
+            logger.info(f"[RELEVANCE_FILTER] url={result.url[:80]} relevant={result.relevant} confidence={result.confidence:.2f} reason={result.reason}")
         
         return RelevanceFilterResult(
             relevant_evidence=relevant_evidence,

@@ -375,29 +375,26 @@ class MistralSemanticExtractor:
         entity_name: str,
         document: ResearchDocument,
     ) -> bool:
-        """Verify that the entity name appears in the document.
+        """Verify entity match for semantic extraction.
         
-        This is a conservative check: the entity name must appear in the
-        normalized text (case-insensitive) for us to extract from this document.
+        This method is now a NO-OP that always returns True.
+        Entity matching is handled by the RelevanceFilter BEFORE extraction.
+        
+        Once a page has passed the LLM semantic relevance stage (RelevanceFilter),
+        the semantic extractor should NOT reject the document merely because the
+        literal entity name is absent from the body. Instead, the extraction prompt
+        performs the semantic identity assessment using target entity, aliases,
+        entity context, URL, domain, title, and document content.
         
         Args:
             entity_name: The entity being researched
             document: The ResearchDocument to check
             
         Returns:
-            True if entity match is verified, False otherwise
+            True (always) - entity matching is done by RelevanceFilter
         """
-        if not entity_name or not entity_name.strip():
-            return False
-        
-        normalized_entity = entity_name.strip()
-        content = document.normalized_text
-        
-        if not content:
-            return False
-        
-        # Case-insensitive check
-        return normalized_entity.lower() in content.lower()
+        # Always return True - entity matching is handled by RelevanceFilter
+        return True
     
     def _create_document_chunks(
         self,
@@ -823,15 +820,8 @@ Ontology Rules:
             # Create ResearchDocument
             document = ResearchDocument.from_evidence_record(record)
             
-            # Verify entity match
-            if not self._verify_entity_match(entity_name, document):
-                results.append(ExtractionResult(
-                    document=document,
-                    atomic_evidence=[],
-                    entity_match_verified=False,
-                    extraction_errors=["Entity not found in document"],
-                ))
-                continue
+            # Verify entity match - now always True, entity matching handled by RelevanceFilter
+            entity_match_verified = self._verify_entity_match(entity_name, document)
             
             # Create chunks
             chunks = self._create_document_chunks(document)

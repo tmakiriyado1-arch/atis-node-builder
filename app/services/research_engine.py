@@ -256,6 +256,18 @@ class ResearchEngine:
             "SUMMARY": "summary",
         }
         return mapping.get(atomic_claim.evidence_type, "candidate_claim")
+    
+    def _atomic_claim_to_field_name_from_evidence_type(self, evidence_type):
+        """Map EvidenceType to ResearchClaim field_name."""
+        from app.services.research.semantic_extractor import EvidenceType
+        mapping = {
+            EvidenceType.FACT: "fact",
+            EvidenceType.ATTRIBUTE: "attribute",
+            EvidenceType.RELATIONSHIP: "relationship",
+            EvidenceType.ASSOCIATION: "association",
+            EvidenceType.SUMMARY: "summary",
+        }
+        return mapping.get(evidence_type, "candidate_claim")
 
     def _create_default_orchestrator(
         self,
@@ -411,62 +423,181 @@ class ResearchEngine:
         
 
         # =============================================================================
-        # NEW EVIDENCE FILTERING PIPELINE
+        # NEW EVIDENCE FILTERING PIPELINE - LLM SEMANTIC RELEVANCE
         # =============================================================================
-        # Apply entity-relevant evidence filtering, atomic claim extraction,
-        # claim validation, and deduplication BEFORE creating ResearchClaims
-        # This ensures that raw webpage text is NEVER treated as canonical node data
+        # Change the research pipeline so that semantic LLM relevance, not literal entity-name
+        # matching, determines whether crawled page content is relevant to the target entity.
+        #
+        # Production pipeline:
+        # Search provider -> URLs discovered -> PageCrawler -> EvidenceRecord ->
+        # LLM SEMANTIC RELEVANCE FILTER -> Relevant EvidenceRecord ->
+        # LLM SEMANTIC EXTRACTION -> Atomic evidence / ResearchClaim ->
+        # Structural validation -> Claim classification -> Canonical node
         
         if deduped_evidence:
-            # Run the evidence filtering pipeline
-            evidence_pipeline = EvidenceFilterPipeline(
-                target_entity=cleaned_name,
+            # Step 1: Apply LLM-based relevance filtering
+            # This is the page-level semantic identity/relevance decision
+            logger.info(f"[RELEVANCE_FILTER {cleaned_name}] Starting LLM semantic relevance filtering with {len(deduped_evidence)} evidence items")
+            
+            from app.services.research.relevance_filter import RelevanceFilter
+            relevance_filter = RelevanceFilter(
+                min_content_length=50,  # Lower threshold to allow short but meaningful pages
             )
             
-            # Execute the complete pipeline
-            atomic_claims, pipeline_metadata = evidence_pipeline.run_pipeline(deduped_evidence)
-            
-            # Store pipeline metadata in result
-            result.metadata = getattr(result, 'metadata', {})
-            result.metadata['evidence_filter_pipeline'] = pipeline_metadata
-            
-            # Convert AtomicClaim to ResearchClaim for backward compatibility
-            claims = []
-            for atomic_claim in atomic_claims:
-                claim = ResearchClaim(
-                    claim=atomic_claim.claim_text,
-                    claim_text=atomic_claim.claim_text,
-                    field_name=self._atomic_claim_to_field_name(atomic_claim),
-                    source_url=atomic_claim.source_url,
-                    source_title=atomic_claim.source_title,
-                    evidence_passage=atomic_claim.evidence_passage,
-                    source_type="webpage",
-                    confidence=atomic_claim.confidence,
-                    extraction_method=f"evidence_filter_{atomic_claim.extraction_method}",
-                    extracted_at=atomic_claim.extracted_at,
-                    subject=atomic_claim.subject,
-                    predicate=atomic_claim.predicate,
-                    object=atomic_claim.object,
-                    evidence_urls=[atomic_claim.source_url] if atomic_claim.source_url else [],
-                    metadata={
-                        "atomic_claim_id": atomic_claim.claim_id,
-                        "relevance": atomic_claim.relevance.value,
-                        "evidence_type": atomic_claim.evidence_type,
-                        "quality_status": atomic_claim.quality_status.value,
-                        "pipeline_stage": "evidence_filter",
-                    },
+            try:
+                relevance_result = await relevance_filter.filter(
+                    cleaned_name,
+                    deduped_evidence,
                 )
-                claims.append(claim)
+                
+                # Log relevance filtering results
+                logger.info(f"[RELEVANCE_FILTER {cleaned_name}] input={len(deduped_evidence)} llm_evaluated={len(relevance_result.results)} relevant={len(relevance_result.relevant_evidence)} irrelevant={len(relevance_result.irrelevant_evidence)}")
+                
+                # For each decision, log details
+                for result_item in relevance_result.results:
+                    logger.info(f"[RELEVANCE_FILTER {cleaned_name}] url={result_item.url[:80]} relevant={result_item.relevant} confidence={result_item.confidence:.2f} reason={result_item.reason}")
+                
+                # Store relevance filter metadata
+                result.metadata = getattr(result, 'metadata', {})
+                result.metadata['relevance_filter'] = {
+                    'input_count': len(deduped_evidence),
+                    'filtered_count': relevance_result.filtered_count,
+                    'kept_count': relevance_result.kept_count,
+                    'results': [r.to_dict() for r in relevance_result.results],
+                }
+                
+                # Use only relevant evidence for semantic extraction
+                relevant_evidence = relevance_result.relevant_evidence
+                
+            except Exception as e:
+                # If LLM relevance filtering fails, log and use all evidence
+                logger.warning(f"[RELEVANCE_FILTER {cleaned_name}] LLM unavailable: {e}")
+                logger.warning(f"[RELEVANCE_FILTER {cleaned_name}] fallback=retain_for_downstream_review")
+                relevant_evidence = list(deduped_evidence)
+                result.metadata = getattr(result, 'metadata', {})
+                result.metadata['relevance_filter'] = {
+                    'input_count': len(deduped_evidence),
+                    'filtered_count': 0,
+                    'kept_count': len(deduped_evidence),
+                    'error': str(e),
+                    'fallback': 'retain_all',
+                }
             
-            logger.info(f"[EVIDENCE_FILTER {cleaned_name}] Pipeline produced {len(atomic_claims)} atomic claims from {len(deduped_evidence)} evidence records")
-            logger.info(f"[EVIDENCE_FILTER {cleaned_name}] Pipeline metadata: {pipeline_metadata}")
-            
-            # Update evidence with filtered results
-            result.evidence = deduped_evidence
-            
-            # Skip the rest of the enrichment pipeline since we have claims
-            # Set deduped_evidence to empty to prevent fallback enrichment
-            deduped_evidence = []
+            # Step 2: Apply semantic extraction to relevant evidence
+            # Use MistralSemanticExtractor for LLM-based extraction
+            if relevant_evidence:
+                logger.info(f"[SEMANTIC_EXTRACTION {cleaned_name}] Starting semantic extraction with {len(relevant_evidence)} relevant evidence items")
+                
+                from app.services.research.semantic_extractor import MistralSemanticExtractor
+                
+                extractor = MistralSemanticExtractor()
+                
+                try:
+                    extraction_results = await extractor.extract(
+                        cleaned_name,
+                        relevant_evidence,
+                    )
+                    
+                    # Convert AtomicEvidence to ResearchClaim
+                    claims = []
+                    for extraction_result in extraction_results:
+                        for atomic_evidence in extraction_result.atomic_evidence:
+                            claim = ResearchClaim(
+                                claim=f"{atomic_evidence.subject} {atomic_evidence.predicate} {atomic_evidence.object}",
+                                claim_text=f"{atomic_evidence.subject} {atomic_evidence.predicate} {atomic_evidence.object}",
+                                field_name=self._atomic_claim_to_field_name_from_evidence_type(atomic_evidence.evidence_type),
+                                source_url=atomic_evidence.source_url,
+                                source_title=atomic_evidence.source_title,
+                                evidence_passage=atomic_evidence.passage,
+                                source_type="webpage",
+                                confidence=atomic_evidence.confidence,
+                                extraction_method=atomic_evidence.extraction_method,
+                                extracted_at=atomic_evidence.extracted_at,
+                                subject=atomic_evidence.subject,
+                                predicate=atomic_evidence.predicate,
+                                object=atomic_evidence.object,
+                                evidence_urls=[atomic_evidence.source_url] if atomic_evidence.source_url else [],
+                                metadata={
+                                    "document_id": atomic_evidence.document_id,
+                                    "chunk_index": atomic_evidence.chunk_index,
+                                    "evidence_type": atomic_evidence.evidence_type.value,
+                                    "entity_match_verified": extraction_result.entity_match_verified,
+                                    "pipeline_stage": "semantic_extraction",
+                                },
+                            )
+                            claims.append(claim)
+                    
+                    logger.info(f"[SEMANTIC_EXTRACTION {cleaned_name}] Extracted {len(claims)} claims from {len(relevant_evidence)} relevant evidence items")
+                    
+                    # Store semantic extraction metadata
+                    result.metadata['semantic_extraction'] = {
+                        'relevant_evidence_count': len(relevant_evidence),
+                        'extraction_results_count': len(extraction_results),
+                        'total_atomic_evidence': len(claims),
+                    }
+                    
+                except Exception as e:
+                    logger.warning(f"[SEMANTIC_EXTRACTION {cleaned_name}] Semantic extraction failed: {e}")
+                    result.metadata['semantic_extraction'] = {
+                        'error': str(e),
+                        'relevant_evidence_count': len(relevant_evidence),
+                    }
+                    # Fall back to evidence filter pipeline for backward compatibility
+                    logger.info(f"[SEMANTIC_EXTRACTION {cleaned_name}] Falling back to EvidenceFilterPipeline")
+                    
+                    from app.services.research.evidence_filter import EvidenceFilterPipeline
+                    evidence_pipeline = EvidenceFilterPipeline(
+                        target_entity=cleaned_name,
+                    )
+                    atomic_claims, pipeline_metadata = evidence_pipeline.run_pipeline(relevant_evidence)
+                    
+                    result.metadata['evidence_filter_pipeline'] = pipeline_metadata
+                    
+                    claims = []
+                    for atomic_claim in atomic_claims:
+                        claim = ResearchClaim(
+                            claim=atomic_claim.claim_text,
+                            claim_text=atomic_claim.claim_text,
+                            field_name=self._atomic_claim_to_field_name(atomic_claim),
+                            source_url=atomic_claim.source_url,
+                            source_title=atomic_claim.source_title,
+                            evidence_passage=atomic_claim.evidence_passage,
+                            source_type="webpage",
+                            confidence=atomic_claim.confidence,
+                            extraction_method=f"evidence_filter_{atomic_claim.extraction_method}",
+                            extracted_at=atomic_claim.extracted_at,
+                            subject=atomic_claim.subject,
+                            predicate=atomic_claim.predicate,
+                            object=atomic_claim.object,
+                            evidence_urls=[atomic_evidence.source_url] if atomic_claim.source_url else [],
+                            metadata={
+                                "atomic_claim_id": atomic_claim.claim_id,
+                                "relevance": atomic_claim.relevance.value,
+                                "evidence_type": atomic_claim.evidence_type,
+                                "quality_status": atomic_claim.quality_status.value,
+                                "pipeline_stage": "evidence_filter_fallback",
+                            },
+                        )
+                        claims.append(claim)
+                    
+                    logger.info(f"[EVIDENCE_FILTER {cleaned_name}] Fallback pipeline produced {len(atomic_claims)} atomic claims from {len(relevant_evidence)} evidence records")
+                
+                # Update evidence with relevant evidence
+                result.evidence = relevant_evidence
+                
+                # Skip the rest of the enrichment pipeline since we have claims
+                # Set deduped_evidence to empty to prevent fallback enrichment
+                deduped_evidence = []
+            else:
+                # No relevant evidence found
+                logger.warning(f"[RELEVANCE_FILTER {cleaned_name}] No relevant evidence found after filtering")
+                result.evidence = deduped_evidence
+                result.metadata['relevance_filter'] = {
+                    'input_count': len(deduped_evidence),
+                    'filtered_count': len(deduped_evidence),
+                    'kept_count': 0,
+                    'error': 'no_relevant_evidence',
+                }
         
         # Only set execution status to failed if there's no evidence AND no orchestrator result
         # If we have orchestrator_result, the research_status already reflects the quality
