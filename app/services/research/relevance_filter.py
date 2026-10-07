@@ -438,28 +438,22 @@ Rules:
             response.raise_for_status()
             
             json_response = response.json()
-            choices = json_response.get("choices") or []
-            if not isinstance(choices, list) or not choices:
-                # Fallback: mark all as relevant
-                return [
-                    RelevanceResult(
-                        url=record.url if record else "",
-                        relevant=True,
-                        reason="LLM returned no choices",
-                        confidence=0.5,
-                    )
-                    for record in batch
-                ]
             
-            raw_content = choices[0].get("message", {}).get("content") if isinstance(choices[0], dict) else ""
-            if not isinstance(raw_content, str):
-                # Fallback: mark all as relevant
+            # Use canonical normalization
+            from app.services.research.mistral_response import extract_mistral_message_content
+            raw_content = extract_mistral_message_content(json_response, context="RELEVANCE_FILTER")
+            
+            if raw_content is None:
+                logger.warning(f"[RELEVANCE_FILTER] LLM_NORMALIZATION_RESULT=None, cannot parse response")
+                logger.warning(f"[RELEVANCE_FILTER] LLM filtering failed, returning fallback")
+                # Do NOT mark as relevant=True - this is an LLM failure
+                # Return a result that clearly indicates failure
                 return [
                     RelevanceResult(
                         url=record.url if record else "",
-                        relevant=True,
-                        reason="LLM returned non-string content",
-                        confidence=0.5,
+                        relevant=False,
+                        reason="LLM filtering failed: no content returned",
+                        confidence=0.0,
                     )
                     for record in batch
                 ]
@@ -467,27 +461,32 @@ Rules:
             # Parse JSON response
             try:
                 parsed = json.loads(raw_content)
-            except (TypeError, ValueError):
-                # Fallback: mark all as relevant
+                logger.info(f"[RELEVANCE_FILTER] JSON_PARSE_RESULT=success")
+            except (TypeError, ValueError) as e:
+                logger.warning(f"[RELEVANCE_FILTER] JSON_PARSE_RESULT=failure error={e}")
+                logger.warning(f"[RELEVANCE_FILTER] LLM filtering failed, returning fallback")
+                # Do NOT mark as relevant=True - this is an LLM failure
                 return [
                     RelevanceResult(
                         url=record.url if record else "",
-                        relevant=True,
-                        reason="LLM returned invalid JSON",
-                        confidence=0.5,
+                        relevant=False,
+                        reason=f"LLM filtering failed: invalid JSON ({e})",
+                        confidence=0.0,
                     )
                     for record in batch
                 ]
             
             # Parse results
             if not isinstance(parsed, list):
-                # Fallback: mark all as relevant
+                logger.warning(f"[RELEVANCE_FILTER] LLM returned non-array response: type={type(parsed).__name__}")
+                logger.warning(f"[RELEVANCE_FILTER] LLM filtering failed, returning fallback")
+                # Do NOT mark as relevant=True - this is an LLM failure
                 return [
                     RelevanceResult(
                         url=record.url if record else "",
-                        relevant=True,
-                        reason="LLM returned non-array response",
-                        confidence=0.5,
+                        relevant=False,
+                        reason="LLM filtering failed: non-array response",
+                        confidence=0.0,
                     )
                     for record in batch
                 ]

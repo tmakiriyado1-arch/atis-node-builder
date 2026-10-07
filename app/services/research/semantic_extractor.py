@@ -610,6 +610,8 @@ Ontology Rules:
             "Content-Type": "application/json",
         }
         
+        from app.services.research.mistral_response import extract_mistral_message_content
+        
         for attempt in range(self.max_retries + 1):
             try:
                 if client is not None:
@@ -629,23 +631,29 @@ Ontology Rules:
                 response.raise_for_status()
                 json_response = response.json()
                 
-                choices = json_response.get("choices") or []
-                if not isinstance(choices, list) or not choices:
+                # Use canonical normalization
+                raw_content = extract_mistral_message_content(json_response, context="SEMANTIC_EXTRACTOR")
+                
+                if raw_content is None:
+                    logger.warning(f"[SEMANTIC_EXTRACTOR] LLM_NORMALIZATION_RESULT=None")
+                    if attempt < self.max_retries:
+                        continue
                     return None
                 
-                raw_content = choices[0].get("message", {}).get("content") if isinstance(choices[0], dict) else ""
-                if not isinstance(raw_content, str):
-                    return None
+                logger.info(f"[SEMANTIC_EXTRACTOR] LLM_RESPONSE_TYPE=str LLM_NORMALIZED_TEXT_LENGTH={len(raw_content)}")
                 
                 try:
                     parsed = json.loads(raw_content)
+                    logger.info(f"[SEMANTIC_EXTRACTOR] JSON_PARSE_RESULT=success")
                     return parsed
-                except (TypeError, ValueError):
+                except (TypeError, ValueError) as e:
+                    logger.warning(f"[SEMANTIC_EXTRACTOR] JSON_PARSE_RESULT=failure error={e}")
                     if attempt < self.max_retries:
                         continue
                     return None
                     
-            except Exception:
+            except Exception as e:
+                logger.warning(f"[SEMANTIC_EXTRACTOR] LLM call attempt {attempt + 1} failed: {e}")
                 if attempt < self.max_retries:
                     continue
                 return None
@@ -809,46 +817,73 @@ Ontology Rules:
         """
         results = []
         
+        logger.info(f"[SEMANTIC_EXTRACTION {entity_name}] Starting extraction with {len(evidence_records)} evidence records")
+        
+        extraction_stats = {
+            'input_records': len(evidence_records),
+            'documents_processed': 0,
+            'documents_skipped': 0,
+            'documents_with_errors': 0,
+            'llm_calls': 0,
+            'llm_success': 0,
+            'llm_failure': 0,
+            'total_atomic_evidence': 0,
+            'total_rejected': 0,
+        }
+        
         for record in evidence_records:
             if not record or not record.url:
+                extraction_stats['documents_skipped'] += 1
                 continue
             
             # Skip unusable evidence
             if hasattr(record, 'evidence_status') and record.evidence_status == EvidenceStatus.UNUSABLE:
+                extraction_stats['documents_skipped'] += 1
                 continue
+            
+            extraction_stats['documents_processed'] += 1
             
             # Create ResearchDocument
             document = ResearchDocument.from_evidence_record(record)
             
-            # Verify entity match - now always True, entity matching handled by RelevanceFilter
-            entity_match_verified = self._verify_entity_match(entity_name, document)
-            
             # Create chunks
             chunks = self._create_document_chunks(document)
             if not chunks:
+                logger.info(f"[SEMANTIC_EXTRACTION {entity_name}] No chunks for {document.url[:60]}")
                 results.append(ExtractionResult(
                     document=document,
                     atomic_evidence=[],
                     entity_match_verified=True,
                     extraction_errors=["No chunks created from document"],
                 ))
+                extraction_stats['documents_with_errors'] += 1
                 continue
             
             # Build prompt
             prompt = self._build_extraction_prompt(entity_name, document, chunks)
             
             # Call Mistral
+            extraction_stats['llm_calls'] += 1
             parsed = await self._call_mistral(prompt, client)
             
             if parsed is None:
+                logger.info(f"[SEMANTIC_EXTRACTION {entity_name}] LLM call failed for {document.url[:60]}")
+                extraction_stats['llm_failure'] += 1
                 # Fallback: create basic atomic evidence from document
                 result = self._create_fallback_extraction(entity_name, document)
                 results.append(result)
                 continue
             
+            extraction_stats['llm_success'] += 1
+            
             # Parse result
             result = self._parse_extraction_result(entity_name, document, parsed)
+            extraction_stats['total_atomic_evidence'] += len(result.atomic_evidence)
+            extraction_stats['total_rejected'] += len(parsed.get("atomic_evidence", [])) - len(result.atomic_evidence)
             results.append(result)
+        
+        # Log extraction statistics
+        logger.info(f"[SEMANTIC_EXTRACTION {entity_name}] Extraction stats: {extraction_stats}")
         
         return results
     

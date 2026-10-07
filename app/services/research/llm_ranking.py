@@ -229,33 +229,37 @@ Required: Return ONLY valid JSON, no other text."""
                     RankedResult(
                         evidence_record=er,
                         rank_score=0.5,
-                        relevance="medium",
+                        relevance="uncertain",
                         validation="uncertain",
                         reasoning="LLM call failed",
                         query_variation=query_variations[idx] if query_variations and idx < len(query_variations) else "",
                     )
                     for idx, er in enumerate(evidence_records)
                 ],
+                ranking_metadata={"status": "failed", "error": "LLM call returned None"},
             )
         
         # Parse response
         try:
             rankings = self._parse_rankings(response, evidence_records, query_variations)
+            logger.info(f"[LLM_RANKER] Ranking successful, ranked {len(rankings.ranked_results)} results")
             return rankings
         except Exception as e:
             logger.error(f"[LLM_RANKER] Failed to parse rankings: {e}")
+            logger.error(f"[LLM_RANKER] LLM ranking failed, returning unranked results")
             return RankingResult(
                 ranked_results=[
                     RankedResult(
                         evidence_record=er,
                         rank_score=0.5,
-                        relevance="medium",
+                        relevance="uncertain",
                         validation="uncertain",
-                        reasoning=f"Parse error: {e}",
+                        reasoning=f"Ranking parse failed: {e}",
                         query_variation=query_variations[idx] if query_variations and idx < len(query_variations) else "",
                     )
                     for idx, er in enumerate(evidence_records)
                 ],
+                ranking_metadata={"status": "failed", "error": str(e)},
             )
     
     async def select_top_results(
@@ -415,7 +419,9 @@ Required: Return ONLY valid JSON, no other text."""
         prompt: str,
         client: Optional[httpx.AsyncClient] = None,
     ) -> Optional[str]:
-        """Call Mistral API."""
+        """Call Mistral API with canonical response normalization."""
+        from app.services.research.mistral_response import extract_mistral_message_content
+        
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -447,25 +453,16 @@ Required: Return ONLY valid JSON, no other text."""
             response.raise_for_status()
             data = response.json()
             
-            choices = data.get("choices", [])
-            if choices:
-                content = choices[0].get("message", {}).get("content", "")
-                # Ensure content is always a string or None
-                # Mistral API can return non-string types (e.g., [] for empty content)
-                if isinstance(content, str):
-                    return content
-                elif content is None:
-                    return None
-                else:
-                    # Non-string, non-None content (e.g., list, dict)
-                    # Don't disguise as JSON - return None to trigger fallback
-                    logger.warning(
-                        f"[LLM_RANKER] Unexpected content type {type(content).__name__}, "
-                        f"expected str or None"
-                    )
-                    return None
+            # Use canonical normalization
+            content = extract_mistral_message_content(data, context="LLM_RANKER")
             
-            return None
+            if content is not None:
+                logger.info(f"[LLM_RANKER] LLM_RESPONSE_TYPE=str LLM_NORMALIZED_TEXT_LENGTH={len(content)}")
+            else:
+                logger.warning(f"[LLM_RANKER] LLM_NORMALIZATION_RESULT=None")
+            
+            return content
+            
         except Exception as e:
             logger.error(f"[LLM_RANKER] LLM call failed: {e}")
             return None
