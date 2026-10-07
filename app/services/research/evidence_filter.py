@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, FrozenSet, List, Optional, Sequence, Set, Tuple
 
+from app.logging import logger
 from app.services.ontology import get_ontology
 from app.services.research.evidence import EvidenceRecord, EvidenceStatus
 
@@ -350,24 +351,47 @@ class EvidenceFilterPipeline:
         related: List[EvidenceRecord] = []
         irrelevant: List[EvidenceRecord] = []
         
-        for record in evidence_records:
+        for idx, record in enumerate(evidence_records):
             if not record or not record.url:
+                logger.info(f"[EVIDENCE_FILTER {self.target_entity}] EVIDENCE_DEBUG index={idx} url={record.url if record else 'None'} classification=IRRELEVANT reason=no_record_or_url")
                 irrelevant.append(record)
                 continue
             
             # Get the authoritative semantic text
             text = self._get_authoritative_text(record)
             if not text or not text.strip():
+                logger.info(f"[EVIDENCE_FILTER {self.target_entity}] EVIDENCE_DEBUG index={idx} url={record.url[:80]} content_length=0 classification=IRRELEVANT reason=empty_text")
                 irrelevant.append(record)
                 continue
             
-            # Check if this is unusable evidence
+            # IMPORTANT: Check for entity reference BEFORE quality checks
+            # If text contains the target entity, it should be DIRECT regardless of quality flags
+            # This prevents the cascading bug where SOFT_404 -> UNUSABLE -> IRRELEVANT
+            # overrides entity-relevant content
+            text_lower = text.lower()
+            target_lower = self.target_entity.lower()
+            contains_target = self._contains_entity_reference(text_lower, target_lower)
+            
+            # Log detailed classification info
+            text_preview = text[:300] if text else ''
+            logger.info(f"[EVIDENCE_FILTER {self.target_entity}] EVIDENCE_DEBUG index={idx} url={record.url[:80]} content_length={len(text)} content_preview={text_preview[:200]} target_entity={self.target_entity} contains_target_in_content={contains_target} evidence_status={record.evidence_status} extraction_quality={record.extraction_quality}")
+            
+            # If text contains the target entity, classify as DIRECT (override quality checks)
+            # This is the fix for the cascading SOFT_404 -> UNUSABLE -> IRRELEVANT bug
+            if contains_target:
+                logger.info(f"[EVIDENCE_FILTER {self.target_entity}] EVIDENCE_DEBUG index={idx} url={record.url[:80]} classification=DIRECT reason=contains_target_entity")
+                direct.append(record)
+                continue
+            
+            # Check if this is unusable evidence (only if no entity reference)
             if record.evidence_status == EvidenceStatus.UNUSABLE:
+                logger.info(f"[EVIDENCE_FILTER {self.target_entity}] EVIDENCE_DEBUG index={idx} url={record.url[:80]} content_length={len(text)} evidence_status={record.evidence_status} extraction_quality={record.extraction_quality} classification=IRRELEVANT reason=unusable_evidence_no_target")
                 irrelevant.append(record)
                 continue
             
-            # Classify relevance
+            # Classify relevance for text without entity reference
             classification = self._classify_evidence_relevance(text, record)
+            logger.info(f"[EVIDENCE_FILTER {self.target_entity}] EVIDENCE_DEBUG index={idx} url={record.url[:80]} classification={classification} reason=classification_result")
             
             if classification == RelevanceClassification.DIRECT:
                 direct.append(record)
