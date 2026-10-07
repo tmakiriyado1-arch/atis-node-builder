@@ -31,6 +31,9 @@ def _sanitize_url_for_logging(url: str) -> str:
     
     Preserves query parameters like 'q', 'max_results', 'action' but redacts
     any parameter values that look like secrets/tokens.
+    
+    IMPORTANT: Preserves the exact URL encoding (e.g., %20 for spaces) to accurately
+    reflect what was sent over the wire, not what urlencode() would produce.
     """
     if not url:
         return url
@@ -42,21 +45,36 @@ def _sanitize_url_for_logging(url: str) -> str:
         # Parameters to preserve as-is (these are safe to log)
         safe_params = {'q', 'max_results', 'action', 'provider', 'query', 'limit', 'offset', 'page'}
         
-        # Parse query string
-        from urllib.parse import parse_qs, urlencode
-        params_dict = parse_qs(query_params, keep_blank_values=True)
+        # Parse query string - this will decode %20 to spaces
+        from urllib.parse import parse_qsl, urlencode
+        parsed_params = parse_qsl(query_params, keep_blank_values=True)
         
-        sanitized_params = {}
-        for key, values in params_dict.items():
+        sanitized_pairs = []
+        for key, value in parsed_params:
             if key.lower() in safe_params:
-                # Preserve safe parameters
-                sanitized_params[key] = values
+                # Preserve safe parameter values as-is (already decoded by parse_qsl)
+                # Re-encode to preserve original encoding style
+                sanitized_pairs.append((key, value))
             else:
                 # Redact potentially sensitive parameters
-                sanitized_params[key] = ['<redacted>'] * len(values)
+                sanitized_pairs.append((key, '<redacted>'))
         
-        # Rebuild URL with sanitized query
-        sanitized_query = urlencode(sanitized_params, doseq=True)
+        # Rebuild query string preserving the original parameter order
+        # Use quote_via=quote to ensure %20 encoding for spaces
+        from urllib.parse import quote
+        def quote_via_quote(s):
+            """Use quote() to encode, preserving %20 for spaces."""
+            return quote(s, safe='')
+        
+        sanitized_query_parts = []
+        for key, value in sanitized_pairs:
+            # Encode key and value using quote() to preserve %20 encoding
+            encoded_key = quote(key, safe='')
+            encoded_value = quote(value, safe='') if value != '<redacted>' else '<redacted>'
+            sanitized_query_parts.append(f"{encoded_key}={encoded_value}")
+        
+        sanitized_query = '&'.join(sanitized_query_parts)
+        
         sanitized_url = urlunparse((
             parsed.scheme,
             parsed.netloc,
@@ -218,9 +236,20 @@ class AppsScriptSearchProvider(SearchProvider):
                 f"elapsed_ms={_get_elapsed_ms(request_start)}"
             )
             
+            # Configure httpx timeout with connect and read timeouts separately
+            # This allows us to distinguish between connection issues and slow responses
+            # httpx.Timeout: connect, read, write, pool - we care about connect and read
+            import httpx
+            http_timeout = httpx.Timeout(
+                connect=self.timeout * 0.3,  # 30% of total timeout for connection
+                read=self.timeout * 0.7,     # 70% of total timeout for reading response
+                write=5.0,                   # Short write timeout
+                pool=5.0,                    # Short pool timeout
+            )
+            
             async with httpx.AsyncClient(
                 headers=self.headers,
-                timeout=self.timeout,
+                timeout=http_timeout,
                 follow_redirects=True,
             ) as client:
                 try:
@@ -230,6 +259,12 @@ class AppsScriptSearchProvider(SearchProvider):
                     logger.info(
                         f"[APPS_SCRIPT] HTTP_FETCH_RETURN instance={self._instance_id} "
                         f"elapsed_ms={_get_elapsed_ms(request_start)} status={response.status_code}"
+                    )
+                    
+                    # Log detailed timing breakdown
+                    logger.info(
+                        f"[APPS_SCRIPT] HTTP_FETCH_TIMING instance={self._instance_id} "
+                        f"connect_ms={http_fetch_elapsed} total_ms={_get_elapsed_ms(request_start)}"
                     )
                     
                     # Log response metadata
@@ -306,7 +341,7 @@ class AppsScriptSearchProvider(SearchProvider):
                     elapsed_ms = _get_elapsed_ms(request_start)
                     logger.error(
                         f"[APPS_SCRIPT] HTTP_FETCH_EXCEPTION instance={self._instance_id} "
-                        f"phase=http_fetch elapsed_ms={elapsed_ms} "
+                        f"phase=connect elapsed_ms={elapsed_ms} "
                         f"exception_type={type(e).__name__} message={str(e)[:200]}"
                     )
                     logger.error(
@@ -317,15 +352,26 @@ class AppsScriptSearchProvider(SearchProvider):
                     return []
                 except httpx.TimeoutException as e:
                     elapsed_ms = _get_elapsed_ms(request_start)
+                    # Determine which timeout occurred
+                    timeout_type = "total"
+                    if "connect" in str(e).lower():
+                        timeout_type = "connect"
+                    elif "read" in str(e).lower():
+                        timeout_type = "read"
+                    elif "write" in str(e).lower():
+                        timeout_type = "write"
+                    elif "pool" in str(e).lower():
+                        timeout_type = "pool"
+                    
                     logger.error(
                         f"[APPS_SCRIPT] HTTP_FETCH_EXCEPTION instance={self._instance_id} "
-                        f"phase=http_fetch elapsed_ms={elapsed_ms} "
+                        f"phase={timeout_type}_timeout elapsed_ms={elapsed_ms} "
                         f"exception_type={type(e).__name__} message={str(e)[:200]}"
                     )
                     logger.error(
                         f"[APPS_SCRIPT] REQUEST_EXCEPTION instance={self._instance_id} "
                         f"elapsed_ms={elapsed_ms} type={type(e).__name__} "
-                        f"message='Request timed out'"
+                        f"message='{timeout_type}_timeout'"
                     )
                     return []
                 except httpx.HTTPStatusError as e:
