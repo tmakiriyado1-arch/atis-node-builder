@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import time
 from typing import Any, Dict, List, Optional
-from urllib.parse import quote_plus, urlparse, urlunparse
+from urllib.parse import quote, urlparse, urlunparse
 
 import httpx
 
@@ -203,10 +203,13 @@ class AppsScriptSearchProvider(SearchProvider):
         )
         
         try:
-            params = {"q": quote_plus(cleaned_query)}
-            url = f"{self.base_url}?q={quote_plus(cleaned_query)}"
+            # Construct URL with properly encoded query parameter
+            # Use quote() to encode spaces as %20 (not +) since Apps Script gateway
+            # treats + as literal plus sign, not as space
+            encoded_query = quote(cleaned_query, safe='')
+            request_url = f"{self.base_url}?q={encoded_query}"
             
-            sanitized_url = _sanitize_url_for_logging(url)
+            sanitized_url = _sanitize_url_for_logging(request_url)
             logger.info(f"[APPS_SCRIPT] REQUEST_URL={sanitized_url} instance={self._instance_id}")
             
             http_fetch_start = time.monotonic()
@@ -221,7 +224,7 @@ class AppsScriptSearchProvider(SearchProvider):
                 follow_redirects=True,
             ) as client:
                 try:
-                    response = await client.get(url, params=params)
+                    response = await client.get(request_url)
                     
                     http_fetch_elapsed = _get_elapsed_ms(http_fetch_start)
                     logger.info(

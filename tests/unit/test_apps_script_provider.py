@@ -319,7 +319,7 @@ class TestAppsScriptSearchProvider:
 
     @patch("httpx.AsyncClient")
     async def test_search_url_encoding(self, mock_async_client):
-        """Test query is properly URL-encoded."""
+        """Test query is properly URL-encoded with spaces as %20."""
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.json.return_value = {"ok": True, "results": []}
@@ -331,12 +331,14 @@ class TestAppsScriptSearchProvider:
         mock_async_client.return_value = mock_client
         
         provider = AppsScriptSearchProvider(base_url="https://script.google.com/macros/s/TEST/exec")
-        await provider.search("African Development Bank & Group")
+        await provider.search("Theotechnic College")
         
         mock_client.get.assert_called_once()
         call_args = mock_client.get.call_args
-        url = call_args[0][0]
-        assert "African+Development+Bank+%26+Group" in url or "African%20Development%20Bank%20%26%20Group" in url
+        # Check that the URL contains properly encoded query with %20 for spaces
+        url_arg = call_args[0][0]
+        assert "q=Theotechnic%20College" in url_arg
+        assert "q=Theotechnic+College" not in url_arg
 
     @patch("httpx.AsyncClient")
     async def test_search_preserves_all_metadata(self, mock_async_client):
