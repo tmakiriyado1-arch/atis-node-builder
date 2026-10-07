@@ -288,7 +288,10 @@ def test_canonical_row_builds_from_node_draft():
     assert row.entity == "Zimbabwe Energy Regulatory Authority"
     assert row.uid == "zimbabwe-energy-regulatory-authority"
     assert row.summary.startswith("[[Zimbabwe Energy Regulatory Authority]]")
-    assert "[[electricity licensing]]" in row.summary
+    # PHASE 13: Do NOT create wikilinks to arbitrary text like "electricity licensing"
+    # The summary should contain the factual statement without creating invalid backlinks
+    assert "regulates" in row.summary.lower()
+    assert "electricity licensing" in row.summary.lower()
     assert "regulates::[[Electricity]]" in row.relationships
     assert row.sources == ["https://example.gov.zw/licensing"]
 

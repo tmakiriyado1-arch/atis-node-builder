@@ -29,6 +29,17 @@ from app.services.research.semantic_extractor import (
     ExtractionResult,
     ResearchDocument,
 )
+from app.services.research.evidence_filter import (
+    EvidenceFilterPipeline,
+    AtomicClaim,
+    RelevanceClassification,
+    EvidenceQualityStatus,
+)
+from app.services.research.prompts import (
+    get_entity_centric_prompt,
+    get_field_semantic_definitions,
+    FIELD_SEMANTIC_DEFINITIONS,
+)
 
 
 @dataclass
@@ -234,6 +245,18 @@ class ResearchEngine:
 
         return queries[:max_queries]
 
+    
+    def _atomic_claim_to_field_name(self, atomic_claim):
+        """Map AtomicClaim evidence_type to ResearchClaim field_name."""
+        mapping = {
+            "FACT": "fact",
+            "ATTRIBUTE": "attribute",
+            "RELATIONSHIP": "relationship",
+            "ASSOCIATION": "association",
+            "SUMMARY": "summary",
+        }
+        return mapping.get(atomic_claim.evidence_type, "candidate_claim")
+
     def _create_default_orchestrator(
         self,
         fallback_provider: Optional[SearchProvider] = None,
@@ -385,6 +408,65 @@ class ResearchEngine:
                         logger.info(f"[RESEARCH {cleaned_name}] Found evidence: {record.title[:50] if record.title else 'None'} - {record.url[:60] if record.url else 'None'}")
 
             deduped_evidence = deduplicate_evidence(evidence_records)
+        
+
+        # =============================================================================
+        # NEW EVIDENCE FILTERING PIPELINE
+        # =============================================================================
+        # Apply entity-relevant evidence filtering, atomic claim extraction,
+        # claim validation, and deduplication BEFORE creating ResearchClaims
+        # This ensures that raw webpage text is NEVER treated as canonical node data
+        
+        if deduped_evidence:
+            # Run the evidence filtering pipeline
+            evidence_pipeline = EvidenceFilterPipeline(
+                target_entity=cleaned_name,
+            )
+            
+            # Execute the complete pipeline
+            atomic_claims, pipeline_metadata = evidence_pipeline.run_pipeline(deduped_evidence)
+            
+            # Store pipeline metadata in result
+            result.metadata = getattr(result, 'metadata', {})
+            result.metadata['evidence_filter_pipeline'] = pipeline_metadata
+            
+            # Convert AtomicClaim to ResearchClaim for backward compatibility
+            claims = []
+            for atomic_claim in atomic_claims:
+                claim = ResearchClaim(
+                    claim=atomic_claim.claim_text,
+                    claim_text=atomic_claim.claim_text,
+                    field_name=self._atomic_claim_to_field_name(atomic_claim),
+                    source_url=atomic_claim.source_url,
+                    source_title=atomic_claim.source_title,
+                    evidence_passage=atomic_claim.evidence_passage,
+                    source_type="webpage",
+                    confidence=atomic_claim.confidence,
+                    extraction_method=f"evidence_filter_{atomic_claim.extraction_method}",
+                    extracted_at=atomic_claim.extracted_at,
+                    subject=atomic_claim.subject,
+                    predicate=atomic_claim.predicate,
+                    object=atomic_claim.object,
+                    evidence_urls=[atomic_claim.source_url] if atomic_claim.source_url else [],
+                    metadata={
+                        "atomic_claim_id": atomic_claim.claim_id,
+                        "relevance": atomic_claim.relevance.value,
+                        "evidence_type": atomic_claim.evidence_type,
+                        "quality_status": atomic_claim.quality_status.value,
+                        "pipeline_stage": "evidence_filter",
+                    },
+                )
+                claims.append(claim)
+            
+            logger.info(f"[EVIDENCE_FILTER {cleaned_name}] Pipeline produced {len(atomic_claims)} atomic claims from {len(deduped_evidence)} evidence records")
+            logger.info(f"[EVIDENCE_FILTER {cleaned_name}] Pipeline metadata: {pipeline_metadata}")
+            
+            # Update evidence with filtered results
+            result.evidence = deduped_evidence
+            
+            # Skip the rest of the enrichment pipeline since we have claims
+            # Set deduped_evidence to empty to prevent fallback enrichment
+            deduped_evidence = []
         
         # Only set execution status to failed if there's no evidence AND no orchestrator result
         # If we have orchestrator_result, the research_status already reflects the quality

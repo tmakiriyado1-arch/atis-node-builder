@@ -18,6 +18,7 @@ Key Principles:
     3. Backlinks must point to resolvable entities
     4. If evidence does not support a field, leave it as None
     5. The validator is the final authority, not the model
+    6. Maintain evidence-to-field traceability for auditability
 """
 from __future__ import annotations
 
@@ -30,6 +31,12 @@ from app.services.ontology import get_ontology, MetadataField
 from app.services.entity_resolution.resolver import EntityResolver
 from app.services.entity_resolution.registry import EntityRegistry, ResolutionState
 from app.services.research_engine import ResearchClaim
+from app.services.research.evidence_filter import (
+    AtomicClaim,
+    EvidenceFilterPipeline,
+    RelevanceClassification,
+    EvidenceQualityStatus,
+)
 
 
 # =============================================================================
