@@ -8,6 +8,7 @@ Key architectural principle: Search breadth must happen BEFORE entity resolution
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -21,6 +22,11 @@ from app.services.research.query_variation import QueryVariation, QueryVariation
 from app.services.research.search_provider import ProviderRole, SearchProvider, SearchResult
 from app.services.research.relevance_filter import RelevanceFilter, RelevanceFilterResult
 from app.logging import logger
+
+
+def _get_elapsed_ms(start_time: float) -> int:
+    """Get elapsed time in milliseconds from a start time."""
+    return int((time.monotonic() - start_time) * 1000)
 
 
 class ResearchStatus(str, Enum):
@@ -569,6 +575,9 @@ class SearchOrchestrator:
         provider_name = self._get_provider_name(provider)
         provider_role = self._get_provider_role(provider)
         
+        provider_start = time.monotonic()
+        logger.info(f"[ORCHESTRATOR] PROVIDER_START name={provider_name}")
+        
         try:
             # Apply timeout
             # Each provider handles its own query variation internally
@@ -599,6 +608,12 @@ class SearchOrchestrator:
                 elif isinstance(item, SearchResult):
                     raw_results.append(item)
             
+            provider_elapsed = _get_elapsed_ms(provider_start)
+            logger.info(
+                f"[ORCHESTRATOR] PROVIDER_RETURN name={provider_name} "
+                f"elapsed_ms={provider_elapsed} results={len(raw_results)}"
+            )
+            
             return ProviderResult(
                 provider_name=provider_name,
                 role=provider_role,
@@ -610,7 +625,11 @@ class SearchOrchestrator:
             )
             
         except asyncio.TimeoutError:
-            logger.warning(f"[ORCHESTRATOR] Provider {provider_name} timed out after {self._provider_timeout}s")
+            provider_elapsed = _get_elapsed_ms(provider_start)
+            logger.warning(
+                f"[ORCHESTRATOR] PROVIDER_TIMEOUT name={provider_name} "
+                f"elapsed_ms={provider_elapsed} timeout_seconds={self._provider_timeout}"
+            )
             return ProviderResult(
                 provider_name=provider_name,
                 role=provider_role,
@@ -622,7 +641,12 @@ class SearchOrchestrator:
             )
             
         except Exception as e:
-            logger.warning(f"[ORCHESTRATOR] Provider {provider_name} failed: {e}")
+            provider_elapsed = _get_elapsed_ms(provider_start)
+            logger.warning(
+                f"[ORCHESTRATOR] PROVIDER_EXCEPTION name={provider_name} "
+                f"elapsed_ms={provider_elapsed} type={type(e).__name__} "
+                f"message={str(e)[:200]}"
+            )
             # PHASE 19: Check if this is a test provider and handle gracefully
             # If the provider has no results (like FakeSearchProvider in tests), 
             # treat it as success with empty results rather than failure

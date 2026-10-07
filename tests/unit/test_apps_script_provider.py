@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any, Dict, List
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -424,3 +425,295 @@ class TestAppsScriptSearchProvider:
         actual_urls = [r["url"] for r in results]
         for expected_url in expected_urls:
             assert expected_url in actual_urls
+
+
+class TestAppsScriptProviderInstrumentation:
+    """Tests for the timing instrumentation and diagnostic features."""
+
+    @patch("httpx.AsyncClient")
+    async def test_provider_instance_id_is_unique(self, mock_async_client):
+        """Test that each provider instance gets a unique ID."""
+        provider1 = AppsScriptSearchProvider(base_url="https://script.google.com/macros/s/TEST1/exec")
+        provider2 = AppsScriptSearchProvider(base_url="https://script.google.com/macros/s/TEST2/exec")
+        
+        assert provider1._instance_id != provider2._instance_id
+        assert len(provider1._instance_id) == 8
+        assert len(provider2._instance_id) == 8
+
+    @patch("httpx.AsyncClient")
+    async def test_diagnostic_search_success(self, mock_async_client):
+        """Test diagnostic search with successful response (Case A)."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "ok": True,
+            "qualityOk": True,
+            "query": "Theotechnic College",
+            "count": 3,
+            "results": [
+                {"rank": 1, "score": 18.3, "url": "https://example.com/1"},
+                {"rank": 2, "score": 15.2, "url": "https://example.com/2"},
+                {"rank": 3, "score": 10.0, "url": "https://example.com/3"},
+            ],
+        }
+        
+        mock_client = AsyncMock()
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.__aexit__.return_value = None
+        mock_client.get.return_value = mock_response
+        mock_async_client.return_value = mock_client
+        
+        provider = AppsScriptSearchProvider(base_url="https://script.google.com/macros/s/TEST/exec")
+        
+        import asyncio
+        report = await provider.diagnostic_search(query="Theotechnic College", max_results=3)
+        
+        assert report["status"] == "success"
+        assert report["query"] == "Theotechnic College"
+        assert report["max_results"] == 3
+        assert report["result_count"] == 3
+        assert report["total_elapsed_ms"] >= 0
+        assert report["request_started"] is not None
+        assert report["request_returned"] is not None
+        assert report["error"] is None
+
+    @patch("httpx.AsyncClient")
+    async def test_diagnostic_search_http_500(self, mock_async_client):
+        """Test diagnostic search with HTTP 500 (Case B)."""
+        mock_response = MagicMock()
+        mock_response.status_code = 500
+        
+        mock_client = AsyncMock()
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.__aexit__.return_value = None
+        mock_client.get.return_value = mock_response
+        mock_async_client.return_value = mock_client
+        
+        provider = AppsScriptSearchProvider(base_url="https://script.google.com/macros/s/TEST/exec")
+        
+        import asyncio
+        report = await provider.diagnostic_search(query="Theotechnic College", max_results=3)
+        
+        assert report["status"] == "success"  # Provider returns empty list on 500, not exception
+        assert report["result_count"] == 0
+
+    @patch("httpx.AsyncClient")
+    async def test_diagnostic_search_malformed_json(self, mock_async_client):
+        """Test diagnostic search with malformed JSON (Case C)."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.content = b"not valid json {{{}"
+        
+        mock_client = AsyncMock()
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.__aexit__.return_value = None
+        mock_client.get.return_value = mock_response
+        mock_async_client.return_value = mock_client
+        
+        provider = AppsScriptSearchProvider(base_url="https://script.google.com/macros/s/TEST/exec")
+        
+        import asyncio
+        report = await provider.diagnostic_search(query="Theotechnic College", max_results=3)
+        
+        assert report["status"] == "success"  # Provider returns empty list on parse error
+        assert report["result_count"] == 0
+
+    @patch("httpx.AsyncClient")
+    async def test_diagnostic_search_timeout(self, mock_async_client):
+        """Test diagnostic search with timeout (Case D)."""
+        import httpx
+        mock_client = AsyncMock()
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.__aexit__.return_value = None
+        mock_client.get.side_effect = httpx.TimeoutException("Request timed out")
+        mock_async_client.return_value = mock_client
+        
+        provider = AppsScriptSearchProvider(
+            base_url="https://script.google.com/macros/s/TEST/exec",
+            timeout=1.0
+        )
+        
+        import asyncio
+        report = await provider.diagnostic_search(query="Theotechnic College", max_results=3)
+        
+        assert report["status"] == "success"  # Provider returns empty list on timeout
+        assert report["result_count"] == 0
+
+    @patch("httpx.AsyncClient")
+    async def test_diagnostic_search_zero_results(self, mock_async_client):
+        """Test diagnostic search with valid response but zero results (Case E)."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "ok": True,
+            "qualityOk": True,
+            "query": "Theotechnic College",
+            "count": 0,
+            "results": [],
+        }
+        
+        mock_client = AsyncMock()
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.__aexit__.return_value = None
+        mock_client.get.return_value = mock_response
+        mock_async_client.return_value = mock_client
+        
+        provider = AppsScriptSearchProvider(base_url="https://script.google.com/macros/s/TEST/exec")
+        
+        import asyncio
+        report = await provider.diagnostic_search(query="Theotechnic College", max_results=3)
+        
+        assert report["status"] == "success"
+        assert report["result_count"] == 0
+
+    @patch("httpx.AsyncClient")
+    async def test_diagnostic_search_no_base_url(self, mock_async_client):
+        """Test diagnostic search when no base_url is configured."""
+        provider = AppsScriptSearchProvider(base_url=None)
+        
+        import asyncio
+        report = await provider.diagnostic_search(query="Theotechnic College", max_results=3)
+        
+        assert report["status"] is None
+        assert report["error"] == "No base_url configured"
+        assert report["total_elapsed_ms"] == 0
+
+    @patch("httpx.AsyncClient")
+    async def test_instrumentation_logs_request_start(self, mock_async_client, caplog):
+        """Test that REQUEST_START is logged."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"ok": True, "results": []}
+        
+        mock_client = AsyncMock()
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.__aexit__.return_value = None
+        mock_client.get.return_value = mock_response
+        mock_async_client.return_value = mock_client
+        
+        provider = AppsScriptSearchProvider(base_url="https://script.google.com/macros/s/TEST/exec")
+        
+        import asyncio
+        await provider.search("test")
+        
+        # Check that REQUEST_START was logged
+        assert any("REQUEST_START" in record.message for record in caplog.records)
+
+    @patch("httpx.AsyncClient")
+    async def test_instrumentation_logs_http_fetch_start(self, mock_async_client, caplog):
+        """Test that HTTP_FETCH_START is logged."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"ok": True, "results": []}
+        
+        mock_client = AsyncMock()
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.__aexit__.return_value = None
+        mock_client.get.return_value = mock_response
+        mock_async_client.return_value = mock_client
+        
+        provider = AppsScriptSearchProvider(base_url="https://script.google.com/macros/s/TEST/exec")
+        
+        import asyncio
+        await provider.search("test")
+        
+        # Check that HTTP_FETCH_START was logged
+        assert any("HTTP_FETCH_START" in record.message for record in caplog.records)
+
+    @patch("httpx.AsyncClient")
+    async def test_instrumentation_logs_request_end(self, mock_async_client, caplog):
+        """Test that REQUEST_END is logged on success."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "ok": True,
+            "results": [{"rank": 1, "url": "https://example.com"}],
+        }
+        
+        mock_client = AsyncMock()
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.__aexit__.return_value = None
+        mock_client.get.return_value = mock_response
+        mock_async_client.return_value = mock_client
+        
+        provider = AppsScriptSearchProvider(base_url="https://script.google.com/macros/s/TEST/exec")
+        
+        import asyncio
+        await provider.search("test")
+        
+        # Check that REQUEST_END was logged
+        assert any("REQUEST_END" in record.message for record in caplog.records)
+
+    @patch("httpx.AsyncClient")
+    async def test_instrumentation_logs_request_exception(self, mock_async_client, caplog):
+        """Test that REQUEST_EXCEPTION is logged on error."""
+        import httpx
+        mock_client = AsyncMock()
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.__aexit__.return_value = None
+        mock_client.get.side_effect = httpx.TimeoutException("timeout")
+        mock_async_client.return_value = mock_client
+        
+        provider = AppsScriptSearchProvider(base_url="https://script.google.com/macros/s/TEST/exec")
+        
+        import asyncio
+        await provider.search("test")
+        
+        # Check that REQUEST_EXCEPTION was logged
+        assert any("REQUEST_EXCEPTION" in record.message for record in caplog.records)
+
+    @patch("httpx.AsyncClient")
+    async def test_instrumentation_logs_response_contract(self, mock_async_client, caplog):
+        """Test that RESPONSE_CONTRACT is logged."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "ok": True,
+            "qualityOk": True,
+            "count": 5,
+            "results": [{"rank": i, "url": f"https://example.com/{i}"} for i in range(5)],
+        }
+        
+        mock_client = AsyncMock()
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.__aexit__.return_value = None
+        mock_client.get.return_value = mock_response
+        mock_async_client.return_value = mock_client
+        
+        provider = AppsScriptSearchProvider(base_url="https://script.google.com/macros/s/TEST/exec")
+        
+        import asyncio
+        await provider.search("test")
+        
+        # Check that RESPONSE_CONTRACT was logged
+        assert any("RESPONSE_CONTRACT" in record.message for record in caplog.records)
+
+    @patch("httpx.AsyncClient")
+    async def test_url_sanitization_preserves_query_params(self, mock_async_client):
+        """Test that URL sanitization preserves safe query parameters."""
+        from app.services.research.apps_script_provider import _sanitize_url_for_logging
+        
+        url = "https://script.google.com/macros/s/ABC123/exec?q=Theotechnic+College&max_results=10"
+        sanitized = _sanitize_url_for_logging(url)
+        
+        assert "q=Theotechnic+College" in sanitized or "q=Theotechnic%20College" in sanitized
+        assert "max_results=10" in sanitized
+        assert "ABC123" in sanitized
+
+    @patch("httpx.AsyncClient")
+    async def test_url_sanitization_redacts_secrets(self, mock_async_client):
+        """Test that URL sanitization redacts potentially sensitive parameters."""
+        from app.services.research.apps_script_provider import _sanitize_url_for_logging
+        from urllib.parse import unquote
+        
+        url = "https://script.google.com/macros/s/ABC123/exec?q=test&api_key=SECRET123"
+        sanitized = _sanitize_url_for_logging(url)
+        
+        # The sanitized URL may have URL-encoded values
+        sanitized_decoded = unquote(sanitized)
+        
+        assert "SECRET123" not in sanitized
+        assert "SECRET123" not in sanitized_decoded
+        # Check for either encoded or decoded version
+        assert "api_key=" in sanitized or "api_key=" in sanitized_decoded
+        assert "q=test" in sanitized or "q=test" in sanitized_decoded
