@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Optional, Union
 
-from app.logging import logger
+from app.logging_config import logger
 
 
 def normalize_mistral_content(
@@ -86,10 +86,24 @@ def normalize_mistral_content(
             elif isinstance(item, dict):
                 # Dict item - try to extract text from known fields
                 # Mistral can return blocks like: {"type": "text", "text": "..."}
+                # Also handle blocks with 'thinking' and 'closed' fields (reasoning content)
                 if 'text' in item:
                     text_parts.append(item['text'])
                 elif 'content' in item:
                     text_parts.append(item['content'])
+                elif 'thinking' in item:
+                    # Extract thinking content (reasoning blocks)
+                    thinking = item.get('thinking')
+                    if isinstance(thinking, str):
+                        text_parts.append(thinking)
+                    elif isinstance(thinking, dict):
+                        # Extract content from thinking dict
+                        thinking_content = thinking.get('content', '')
+                        if isinstance(thinking_content, str):
+                            text_parts.append(thinking_content)
+                elif item.get('type') == 'text':
+                    # Handle explicit text type blocks
+                    text_parts.append(item.get('text', ''))
                 else:
                     # Log available keys for diagnostics
                     keys = list(item.keys())

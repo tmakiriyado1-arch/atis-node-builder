@@ -15,7 +15,7 @@ import ssl
 import time
 from typing import List, Tuple, Optional, Dict, Any
 
-from app.logging import logger
+from app.logging_config import logger
 
 
 # User-Agent for HTTP requests - matches NORA's existing User-Agent

@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.config import API_TITLE, API_VERSION, API_DESCRIPTION
-from app.logging import logger
+from app.logging_config import logger
 from app.api.entities import router as entities_router
 from app.api.nodes import router as nodes_router
 from app.api.processing import router as processing_router

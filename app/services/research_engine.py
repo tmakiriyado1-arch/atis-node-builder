@@ -307,7 +307,7 @@ class ResearchEngine:
         concurrently, ensuring that failure of any single provider (including DuckDuckGo)
         does not cause the entire research to fail.
         """
-        from app.logging import logger
+        from app.logging_config import logger
         
         cleaned_name = (entity_name or "").strip()
         result = ResearchResult(entity_name=cleaned_name or "", status="failed")

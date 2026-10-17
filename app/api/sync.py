@@ -14,7 +14,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 
-from app.logging import logger
+from app.logging_config import logger
 from app.services.rita_intake import RITAIntakeService
 
 router = APIRouter(prefix="/api/sync", tags=["sync"])

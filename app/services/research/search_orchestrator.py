@@ -21,7 +21,7 @@ from app.services.research.page_crawler import CrawlResult, CrawlStats, PageCraw
 from app.services.research.query_variation import QueryVariation, QueryVariationGenerator, QueryVariationConfig
 from app.services.research.search_provider import ProviderRole, SearchProvider, SearchResult
 from app.services.research.relevance_filter import RelevanceFilter, RelevanceFilterResult
-from app.logging import logger
+from app.logging_config import logger
 
 
 def _get_elapsed_ms(start_time: float) -> int:

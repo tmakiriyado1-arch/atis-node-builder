@@ -28,7 +28,7 @@ from enum import Enum
 from typing import Any, Dict, List, Optional, Sequence
 
 from app import config
-from app.logging import logger
+from app.logging_config import logger
 from app.services.research.evidence import EvidenceRecord
 
 

@@ -28,7 +28,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import httpx
 
 from app import config
-from app.logging import logger
+from app.logging_config import logger
 from app.services.research.apps_script_provider import AppsScriptSearchProvider
 from app.services.research.evidence import EvidenceRecord, EvidenceStatus, ExtractionQuality, RetrievalStatus
 from app.services.research.page_crawler import CrawlResult, PageCrawler

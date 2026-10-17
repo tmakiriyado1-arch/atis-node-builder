@@ -15,7 +15,7 @@ from urllib.parse import urljoin, urlparse, urlunparse
 import httpx
 from bs4 import BeautifulSoup
 
-from app.logging import logger
+from app.logging_config import logger
 from app.services.research.evidence import (
     ExtractionQuality,
     RetrievalStatus,

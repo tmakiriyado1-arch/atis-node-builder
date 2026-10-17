@@ -113,7 +113,7 @@ class EntityPipelineService:
                 error_message="entity is required",
             )
 
-        from app.logging import logger as pipeline_logger
+        from app.logging_config import logger as pipeline_logger
         
         source_entity_id = None if rita_entity is None else getattr(rita_entity, "entity_id", None)
         result = PipelineResult(entity=rita_entity or entity_name, status="pending", source_entity_id=source_entity_id)
@@ -161,11 +161,13 @@ class EntityPipelineService:
         # research_result.research_status is research quality (COMPLETE, PARTIAL, DEGRADED, INSUFFICIENT, UNAVAILABLE)
         from app.services.research.search_orchestrator import ResearchStatus
         
-        # If execution failed, stop here
+        # If execution failed, stop here with explicit error
         if research_result.status != "completed":
-            pipeline_logger.error(f"[PIPELINE {source_entity_id}] RESEARCH EXECUTION FAILED: {research_result.error_message}")
+            pipeline_logger.error(f"[PIPELINE {source_entity_id}] RESEARCH EXECUTION FAILED: status={research_result.status}, error={research_result.error_message}")
             result.status = "failed"
             result.error_message = research_result.error_message or "Research execution did not complete."
+            # Preserve diagnostic info
+            result.classifications = {"error": ["research_execution_failed", research_result.status]}
             return result
         
         # If execution completed but research quality is insufficient, stop here
@@ -176,6 +178,8 @@ class EntityPipelineService:
                 pipeline_logger.error(f"[PIPELINE {source_entity_id}] RESEARCH QUALITY INSUFFICIENT: status={research_result.research_status}")
                 result.status = "insufficient"
                 result.error_message = f"Research quality is {research_result.research_status.value}: not enough trustworthy evidence to establish node."
+                # Preserve diagnostic info
+                result.classifications = {"error": ["research_quality_insufficient", research_result.research_status.value]}
                 return result
         
         # If no evidence at all, fail
@@ -183,6 +187,8 @@ class EntityPipelineService:
             pipeline_logger.error(f"[PIPELINE {source_entity_id}] NO EVIDENCE: {research_result.error_message}")
             result.status = "failed"
             result.error_message = research_result.error_message or "No usable evidence was collected."
+            # Preserve diagnostic info
+            result.classifications = {"error": ["no_evidence", "count_0"]}
             return result
 
         # FIX: Consume claims already produced by ResearchEngine (Mistral web research or semantic extraction)
@@ -211,6 +217,8 @@ class EntityPipelineService:
             pipeline_logger.error(f"[PIPELINE {source_entity_id}] NO CLAIMS GENERATED from {len(result.evidence)} evidence items")
             result.status = "insufficient"
             result.error_message = "No claim candidates were produced from the supplied evidence."
+            # Preserve diagnostic info
+            result.classifications = {"error": ["no_claims_generated", f"evidence_count_{len(result.evidence)}"]}
             return result
 
         if result.resolution.state in {ResolutionState.AMBIGUOUS, ResolutionState.CONFLICT, ResolutionState.POSSIBLE_MATCH}:
@@ -278,7 +286,7 @@ class EntityPipelineService:
         return asyncio.run(self.run_batch(entities))
 
     async def _enrich_entity(self, entity_name: str, evidence: Sequence[EvidenceRecord], entity: Optional[RITAEntity] = None) -> List[ResearchClaim]:
-        from app.logging import logger as pipeline_logger
+        from app.logging_config import logger as pipeline_logger
         
         # This method is now a fallback/legacy path only
         # Production should use ResearchEngine's semantic extraction directly

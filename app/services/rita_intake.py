@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
-from app.logging import logger
+from app.logging_config import logger
 from app.services.google_sheets import GoogleSheetsReader
 
 

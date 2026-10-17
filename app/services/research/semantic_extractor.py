@@ -11,6 +11,7 @@ This module provides structured semantic extraction with:
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -18,6 +19,8 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from app.services.research.evidence import EvidenceRecord, EvidenceStatus, ExtractionQuality
 from app.services.ontology import get_ontology, RELATIONSHIP_PREDICATES, ASSOCIATION_PREDICATES
+
+logger = logging.getLogger(__name__)
 
 
 # =============================================================================
@@ -676,9 +679,6 @@ Ontology Rules:
         Returns:
             ExtractionResult with atomic evidence
         """
-        import logging
-        logger = logging.getLogger(__name__)
-        
         atomic_evidence = []
         errors = []
         entity_match_verified = False

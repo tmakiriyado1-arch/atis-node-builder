@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, FrozenSet, List, Optional, Sequence, Set, Tuple
 
-from app.logging import logger
+from app.logging_config import logger
 from app.services.ontology import get_ontology
 from app.services.research.evidence import EvidenceRecord, EvidenceStatus
 
@@ -208,6 +208,46 @@ class EvidenceFilterPipeline:
         self._irrelevant_patterns: FrozenSet[str] = self._build_irrelevant_patterns()
         self._cta_patterns: FrozenSet[str] = self._build_cta_patterns()
         self._navigation_patterns: FrozenSet[str] = self._build_navigation_patterns()
+        
+        # Block page indicators (content that suggests the page is not accessible)
+        self.BLOCK_PAGE_INDICATORS = [
+            "access denied",
+            "forbidden",
+            "you do not have permission",
+            "permission denied",
+            "not authorized",
+            "unauthorized",
+            "blocked",
+            "cloudflare",
+            "bot detected",
+            "are you a robot",
+            "please verify you are human",
+            "captcha",
+            "security check",
+            "access temporarily blocked",
+            "sorry, you have been blocked",
+            "please turn on javascript",
+            "javascript is required",
+            "enable cookies",
+            "browser verification",
+        ]
+        
+        # Error page indicators (pages that returned 200 but are actually errors)
+        self.ERROR_PAGE_INDICATORS = [
+            "internal server error",
+            "500 error",
+            "404 not found",
+            "page not found",
+            "the page you are looking for",
+            "this page doesn't exist",
+            "error 404",
+            "error 500",
+            "error 502",
+            "error 503",
+            "service unavailable",
+            "server error",
+            "application error",
+        ]
     
     def _build_irrelevant_patterns(self) -> FrozenSet[str]:
         """Build patterns for irrelevant content that should be discarded."""
@@ -372,9 +412,21 @@ class EvidenceFilterPipeline:
             target_lower = self.target_entity.lower()
             contains_target = self._contains_entity_reference(text_lower, target_lower)
             
+            # Check for block/error page indicators in text
+            is_block_page = any(indicator in text_lower for indicator in self.BLOCK_PAGE_INDICATORS)
+            is_error_page = any(indicator in text_lower for indicator in self.ERROR_PAGE_INDICATORS)
+            
             # Log detailed classification info
             text_preview = text[:300] if text else ''
-            logger.info(f"[EVIDENCE_FILTER {self.target_entity}] EVIDENCE_DEBUG index={idx} url={record.url[:80]} content_length={len(text)} content_preview={text_preview[:200]} target_entity={self.target_entity} contains_target_in_content={contains_target} evidence_status={record.evidence_status} extraction_quality={record.extraction_quality}")
+            logger.info(f"[EVIDENCE_FILTER {self.target_entity}] EVIDENCE_DEBUG index={idx} url={record.url[:80]} content_length={len(text)} content_preview={text_preview[:200]} target_entity={self.target_entity} contains_target_in_content={contains_target} evidence_status={record.evidence_status} extraction_quality={record.extraction_quality} is_block_page={is_block_page} is_error_page={is_error_page}")
+            
+            # IMPORTANT: Reject block/error pages regardless of entity match
+            # A page that is blocked or returns an error cannot be substantive evidence
+            # even if the entity name happens to appear in the error message
+            if is_block_page or is_error_page:
+                logger.info(f"[EVIDENCE_FILTER {self.target_entity}] EVIDENCE_DEBUG index={idx} url={record.url[:80]} classification=IRRELEVANT reason=block_or_error_page")
+                irrelevant.append(record)
+                continue
             
             # If text contains the target entity, classify as DIRECT (override quality checks)
             # This is the fix for the cascading SOFT_404 -> UNUSABLE -> IRRELEVANT bug
@@ -383,7 +435,7 @@ class EvidenceFilterPipeline:
                 direct.append(record)
                 continue
             
-            # Check if this is unusable evidence (only if no entity reference)
+            # Check if this is unusable evidence (only if no entity reference and not block/error)
             if record.evidence_status == EvidenceStatus.UNUSABLE:
                 logger.info(f"[EVIDENCE_FILTER {self.target_entity}] EVIDENCE_DEBUG index={idx} url={record.url[:80]} content_length={len(text)} evidence_status={record.evidence_status} extraction_quality={record.extraction_quality} classification=IRRELEVANT reason=unusable_evidence_no_target")
                 irrelevant.append(record)

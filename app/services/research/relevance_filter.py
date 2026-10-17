@@ -11,6 +11,7 @@ that only relevant evidence is processed.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -18,6 +19,8 @@ import httpx
 
 from app import config
 from app.services.research.evidence import EvidenceRecord, EvidenceStatus, ExtractionQuality
+
+logger = logging.getLogger(__name__)
 
 
 # Minimum content length to consider for relevance filtering
@@ -290,8 +293,6 @@ Rules:
         Returns:
             RelevanceFilterResult with filtered evidence and results
         """
-        from app.logging import logger
-        
         if not evidence_records:
             return RelevanceFilterResult(
                 relevant_evidence=[],

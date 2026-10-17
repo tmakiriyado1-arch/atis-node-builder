@@ -3,6 +3,8 @@ Application logging setup
 """
 import logging
 
+logger = logging.getLogger("atis_node_builder")
+
 
 def setup_logging():
     """Configure application-wide logging"""
@@ -15,6 +17,4 @@ def setup_logging():
     logging.getLogger("sqlalchemy").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
     
-    return logging.getLogger("atis_node_builder")
-
-logger = setup_logging()
+    return logger

@@ -23,7 +23,7 @@ import httpx
 
 from app import config
 from app.services.research.search_provider import ProviderRole, SearchProvider
-from app.logging import logger
+from app.logging_config import logger
 
 
 def _sanitize_url_for_logging(url: str) -> str:

@@ -6,7 +6,7 @@ from app.api.dependencies import get_registry, get_resolver
 from app.models import EntityResolveRequest, EntityResolveResponse, EntityCreateRequest, EntityCreateResponse
 from app.services.entity_resolution.registry import EntityRegistry
 from app.services.entity_resolution.resolver import EntityResolver
-from app.logging import logger
+from app.logging_config import logger
 
 router = APIRouter(prefix="/entities", tags=["entities"])
 

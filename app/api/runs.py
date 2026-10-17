@@ -10,7 +10,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 
-from app.logging import logger
+from app.logging_config import logger
 from app.services.pipeline import EntityPipelineService, PipelineResult
 from app.services.rita_intake import RITAIntakeService
 
