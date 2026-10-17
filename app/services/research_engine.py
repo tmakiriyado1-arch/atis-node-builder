@@ -374,6 +374,10 @@ class ResearchEngine:
             result.thin_evidence_count = getattr(orchestrator_result, 'thin_evidence_count', 0)
             result.unusable_evidence_count = getattr(orchestrator_result, 'unusable_evidence_count', 0)
             
+            # Log detailed orchestrator results
+            logger.info(f"[ORCHESTRATOR {cleaned_name}] status={orchestrator_result.status.value}, evidence_count={len(deduped_evidence)}, substantive={result.substantive_evidence_count}, thin={result.thin_evidence_count}, unusable={result.unusable_evidence_count}")
+            logger.info(f"[ORCHESTRATOR {cleaned_name}] providers_attempted={orchestrator_result.providers_attempted}, succeeded={len(orchestrator_result.providers_succeeded)}, failed={len(orchestrator_result.providers_failed)}")
+            
             # If orchestrator returned no evidence but has a status, check if we should fail
             # IMPORTANT: Do NOT fail execution here based on research quality.
             # Execution status (status field) and research quality (research_status field) are separate.
@@ -383,12 +387,17 @@ class ResearchEngine:
                 # No evidence found, but execution completed
                 # research_status already reflects the quality (INSUFFICIENT, UNAVAILABLE, etc.)
                 result.summary = f"Research completed with {orchestrator_result.status.value} quality: no sufficient public evidence was available for this entity."
+                logger.warning(f"[ORCHESTRATOR {cleaned_name}] NO EVIDENCE: status={orchestrator_result.status.value}")
             
             logger.info(f"[RESEARCH {cleaned_name}] Orchestrator status={orchestrator_result.status}, evidence={len(deduped_evidence)}, succeeded={len(orchestrator_result.providers_succeeded)}, failed={len(orchestrator_result.providers_failed)}")
             
             # Log which providers succeeded/failed
             if orchestrator_result.providers_failed:
                 logger.warning(f"[RESEARCH {cleaned_name}] Providers failed: {orchestrator_result.providers_failed}")
+            
+            # Log evidence details for debugging
+            for idx, ev in enumerate(deduped_evidence):
+                logger.info(f"[ORCHESTRATOR {cleaned_name}] EVIDENCE index={idx} url={ev.url[:80] if ev.url else 'None'} title={ev.title[:60] if ev.title else 'None'} snippet_len={len(ev.snippet) if ev.snippet else 0}")
             
         else:
             # Fallback to single provider (legacy behavior)
@@ -409,12 +418,15 @@ class ResearchEngine:
                         max_results=5,
                         context=search_context
                     )
+                    logger.info(f"[RESEARCH {cleaned_name}] Query '{query}' returned {len(search_results) if isinstance(search_results, list) else 0} results")
                 except Exception as exc:
+                    logger.error(f"[RESEARCH {cleaned_name}] Search provider failed for query '{query}': {exc}")
                     result.error_message = f"Search provider failed while researching '{cleaned_name}': {exc}"
                     result.summary = "Research failed before useful evidence could be collected."
                     return result
 
                 if not isinstance(search_results, list):
+                    logger.warning(f"[RESEARCH {cleaned_name}] Query '{query}' returned non-list result: {type(search_results).__name__}")
                     continue
 
                 for item in search_results:
@@ -430,6 +442,7 @@ class ResearchEngine:
                         logger.info(f"[RESEARCH {cleaned_name}] Found evidence: {record.title[:50] if record.title else 'None'} - {record.url[:60] if record.url else 'None'}")
 
             deduped_evidence = deduplicate_evidence(evidence_records)
+            logger.info(f"[RESEARCH {cleaned_name}] Legacy provider: queries={len(queries)}, raw_results={len(evidence_records)}, deduplicated={len(deduped_evidence)}")
         
 
         # =============================================================================
@@ -465,7 +478,7 @@ class ResearchEngine:
                 
                 # For each decision, log details
                 for result_item in relevance_result.results:
-                    logger.info(f"[RELEVANCE_FILTER {cleaned_name}] url={result_item.url[:80]} relevant={result_item.relevant} confidence={result_item.confidence:.2f} reason={result_item.reason}")
+                    logger.info(f"[RELEVANCE_FILTER {cleaned_name}] url={result_item.url[:80] if result_item.url else 'None'} relevant={result_item.relevant} confidence={result_item.confidence:.2f} reason={result_item.reason[:100] if result_item.reason else 'None'}")
                 
                 # Store relevance filter metadata
                 result.metadata = getattr(result, 'metadata', {})
@@ -481,8 +494,8 @@ class ResearchEngine:
                 
             except Exception as e:
                 # If LLM relevance filtering fails, log and use all evidence
-                logger.warning(f"[RELEVANCE_FILTER {cleaned_name}] LLM unavailable: {e}")
-                logger.warning(f"[RELEVANCE_FILTER {cleaned_name}] fallback=retain_for_downstream_review")
+                logger.error(f"[RELEVANCE_FILTER {cleaned_name}] LLM FAILED: {type(e).__name__}: {e}")
+                logger.warning(f"[RELEVANCE_FILTER {cleaned_name}] FALLBACK: retain_for_downstream_review")
                 relevant_evidence = list(deduped_evidence)
                 result.metadata = getattr(result, 'metadata', {})
                 result.metadata['relevance_filter'] = {
@@ -503,15 +516,21 @@ class ResearchEngine:
                 extractor = MistralSemanticExtractor()
                 
                 try:
+                    logger.info(f"[SEMANTIC_EXTRACTION {cleaned_name}] Calling MistralSemanticExtractor.extract()")
                     extraction_results = await extractor.extract(
                         cleaned_name,
                         relevant_evidence,
                     )
+                    logger.info(f"[SEMANTIC_EXTRACTION {cleaned_name}] extract() returned {len(extraction_results)} ExtractionResult objects")
                     
                     # Convert AtomicEvidence to ResearchClaim
                     claims = []
-                    for extraction_result in extraction_results:
-                        for atomic_evidence in extraction_result.atomic_evidence:
+                    total_atomic_evidence = 0
+                    for extraction_result_idx, extraction_result in enumerate(extraction_results):
+                        logger.info(f"[SEMANTIC_EXTRACTION {cleaned_name}] ExtractionResult index={extraction_result_idx} atomic_evidence_count={len(extraction_result.atomic_evidence)} entity_match_verified={extraction_result.entity_match_verified}")
+                        for atomic_evidence_idx, atomic_evidence in enumerate(extraction_result.atomic_evidence):
+                            total_atomic_evidence += 1
+                            logger.info(f"[SEMANTIC_EXTRACTION {cleaned_name}] AtomicEvidence index={atomic_evidence_idx} subject={atomic_evidence.subject[:40] if atomic_evidence.subject else 'None'} predicate={atomic_evidence.predicate} object={atomic_evidence.object[:40] if atomic_evidence.object else 'None'} passage_len={len(atomic_evidence.passage)}")
                             claim = ResearchClaim(
                                 claim=f"{atomic_evidence.subject} {atomic_evidence.predicate} {atomic_evidence.object}",
                                 claim_text=f"{atomic_evidence.subject} {atomic_evidence.predicate} {atomic_evidence.object}",
@@ -537,7 +556,7 @@ class ResearchEngine:
                             )
                             claims.append(claim)
                     
-                    logger.info(f"[SEMANTIC_EXTRACTION {cleaned_name}] Extracted {len(claims)} claims from {len(relevant_evidence)} relevant evidence items")
+                    logger.info(f"[SEMANTIC_EXTRACTION {cleaned_name}] Extracted {len(claims)} claims from {total_atomic_evidence} atomic evidence items across {len(extraction_results)} extraction results")
                     
                     # Store semantic extraction metadata
                     result.metadata['semantic_extraction'] = {
@@ -547,9 +566,11 @@ class ResearchEngine:
                     }
                     
                 except Exception as e:
-                    logger.warning(f"[SEMANTIC_EXTRACTION {cleaned_name}] Semantic extraction failed: {e}")
+                    logger.error(f"[SEMANTIC_EXTRACTION {cleaned_name}] FAILED: {type(e).__name__}: {e}")
+                    logger.warning(f"[SEMANTIC_EXTRACTION {cleaned_name}] Falling back to EvidenceFilterPipeline")
                     result.metadata['semantic_extraction'] = {
                         'error': str(e),
+                        'error_type': type(e).__name__,
                         'relevant_evidence_count': len(relevant_evidence),
                     }
                     # Fall back to evidence filter pipeline for backward compatibility
@@ -564,7 +585,8 @@ class ResearchEngine:
                     result.metadata['evidence_filter_pipeline'] = pipeline_metadata
                     
                     claims = []
-                    for atomic_claim in atomic_claims:
+                    for atomic_claim_idx, atomic_claim in enumerate(atomic_claims):
+                        logger.info(f"[EVIDENCE_FILTER {cleaned_name}] AtomicClaim index={atomic_claim_idx} claim_id={atomic_claim.claim_id} claim_text={atomic_claim.claim_text[:60] if atomic_claim.claim_text else 'None'} relevance={atomic_claim.relevance.value} quality={atomic_claim.quality_status.value}")
                         claim = ResearchClaim(
                             claim=atomic_claim.claim_text,
                             claim_text=atomic_claim.claim_text,
