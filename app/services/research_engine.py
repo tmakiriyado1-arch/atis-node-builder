@@ -61,6 +61,7 @@ class ResearchClaim:
     object: Optional[str] = None
     claim_text: Optional[str] = None
     evidence_urls: List[str] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.claim_text is None:
@@ -117,6 +118,7 @@ class ResearchResult:
         object: Optional[str] = None,
         claim_text: Optional[str] = None,
         evidence_urls: Optional[List[str]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Add extracted claim to result."""
         self.claims.append(
@@ -132,6 +134,7 @@ class ResearchResult:
                 object=object,
                 claim_text=claim_text or claim,
                 evidence_urls=list(evidence_urls) if evidence_urls else ([source_url] if source_url else []),
+                metadata=metadata or {},
             )
         )
 
@@ -569,7 +572,7 @@ class ResearchEngine:
                             subject=atomic_claim.subject,
                             predicate=atomic_claim.predicate,
                             object=atomic_claim.object,
-                            evidence_urls=[atomic_evidence.source_url] if atomic_claim.source_url else [],
+                            evidence_urls=[atomic_claim.source_url] if atomic_claim.source_url else [],
                             metadata={
                                 "atomic_claim_id": atomic_claim.claim_id,
                                 "relevance": atomic_claim.relevance.value,

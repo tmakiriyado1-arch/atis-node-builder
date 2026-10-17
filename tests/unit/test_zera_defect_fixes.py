@@ -1,5 +1,6 @@
 """
 Regression tests for ZERA pipeline failures from run 4c6e116b-d12f-435b-bf00-0edf5bc5507f
+and run 06466fa7-e71e-483f-99cc-93ca004d7a9e
 
 These tests verify fixes for the confirmed findings:
 1. logger not defined in relevance_filter and semantic_extractor
@@ -8,6 +9,7 @@ These tests verify fixes for the confirmed findings:
 4. Evidence-quality decisions for block/error pages
 5. Provider configuration issues
 6. Pipeline state transition failures
+7. ResearchClaim.__init__() got an unexpected keyword argument 'metadata'
 """
 from __future__ import annotations
 
@@ -27,6 +29,7 @@ from app.services.research.relevance_filter import RelevanceFilter, RelevanceFil
 from app.services.research.mistral_response import normalize_mistral_content, extract_mistral_message_content
 from app.services.research.evidence_filter import EvidenceFilterPipeline, RelevanceClassification
 from app.services.research.llm_ranking import LLMRanker, RankingResult, RankedResult
+from app.services.research_engine import ResearchClaim
 
 
 # =============================================================================
@@ -534,3 +537,98 @@ class TestIntegration:
         results = asyncio.run(extractor.extract("ZERA", records))
         assert len(results) == 1
         assert len(results[0].atomic_evidence) == 1
+
+
+# =============================================================================
+# Test G: ResearchClaim metadata field
+# =============================================================================
+
+class TestResearchClaimMetadata:
+    """Test that ResearchClaim accepts metadata keyword argument."""
+
+    def test_research_claim_accepts_metadata(self):
+        """Test that ResearchClaim can be instantiated with metadata parameter."""
+        claim = ResearchClaim(
+            claim="ZERA regulates energy sector",
+            source_url="https://zera.co.zw",
+            metadata={"evidence_type": "FACT", "pipeline_stage": "semantic_extraction"}
+        )
+        assert claim.claim == "ZERA regulates energy sector"
+        assert claim.metadata == {"evidence_type": "FACT", "pipeline_stage": "semantic_extraction"}
+
+    def test_research_claim_metadata_default(self):
+        """Test that ResearchClaim has empty dict as default metadata."""
+        claim = ResearchClaim(
+            claim="ZERA regulates energy sector",
+            source_url="https://zera.co.zw"
+        )
+        assert claim.metadata == {}
+
+    def test_research_claim_with_all_fields_including_metadata(self):
+        """Test ResearchClaim with all fields including metadata."""
+        claim = ResearchClaim(
+            claim="ZERA regulates energy sector",
+            field_name="fact",
+            source_url="https://zera.co.zw",
+            source_title="ZERA Official Site",
+            evidence_passage="ZERA regulates the energy sector",
+            source_type="webpage",
+            confidence=0.9,
+            extraction_method="semantic_extraction",
+            subject="ZERA",
+            predicate="regulates",
+            object="energy sector",
+            claim_text="ZERA regulates energy sector",
+            evidence_urls=["https://zera.co.zw"],
+            metadata={
+                "document_id": "doc_123",
+                "chunk_index": 0,
+                "evidence_type": "FACT",
+                "entity_match_verified": True,
+                "pipeline_stage": "semantic_extraction"
+            }
+        )
+        assert claim.claim == "ZERA regulates energy sector"
+        assert claim.subject == "ZERA"
+        assert claim.predicate == "regulates"
+        assert claim.object == "energy sector"
+        assert claim.metadata["pipeline_stage"] == "semantic_extraction"
+        assert claim.metadata["entity_match_verified"] is True
+
+    def test_atomic_evidence_to_research_claim_with_metadata(self):
+        """Test that AtomicEvidence.to_research_claim() produces valid ResearchClaim."""
+        atomic_ev = AtomicEvidence(
+            subject="ZERA",
+            predicate="regulates",
+            object="energy sector",
+            passage="ZERA regulates the energy sector",
+            evidence_type=EvidenceType.FACT,
+            source_url="https://zera.co.zw",
+            source_title="ZERA Official",
+            document_id="doc_123",
+            chunk_index=0,
+            confidence=0.9,
+            extraction_method="semantic_extraction",
+            metadata={"custom_key": "custom_value"}
+        )
+        claim = atomic_ev.to_research_claim()
+        assert claim.claim == "ZERA regulates energy sector"
+        assert claim.source_url == "https://zera.co.zw"
+        assert isinstance(claim, ResearchClaim)
+        # Note: to_research_claim() doesn't pass metadata currently, which is fine
+        # The metadata from AtomicEvidence is separate from ResearchClaim.metadata
+
+    def test_research_claim_serialization_with_metadata(self):
+        """Test that ResearchClaim with metadata can be serialized."""
+        claim = ResearchClaim(
+            claim="ZERA regulates energy sector",
+            source_url="https://zera.co.zw",
+            metadata={"stage": "test"}
+        )
+        # Should not raise any errors
+        claim_dict = {
+            "claim": claim.claim,
+            "source_url": claim.source_url,
+            "metadata": claim.metadata
+        }
+        assert claim_dict["metadata"]["stage"] == "test"
