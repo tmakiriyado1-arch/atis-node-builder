@@ -170,17 +170,23 @@ class EntityPipelineService:
             result.classifications = {"error": ["research_execution_failed", research_result.status]}
             return result
         
-        # If execution completed but research quality is insufficient, stop here
-        # Simplified: Only block on UNAVAILABLE (all providers failed) or INSUFFICIENT (no evidence)
-        # PARTIAL and DEGRADED should proceed - the LLM will sift through what we have
+        # If execution completed but research quality is insufficient, we now allow
+        # INSUFFICIENT to proceed with degraded extraction as a fallback.
+        # Only UNAVAILABLE (all providers failed) should hard-stop the pipeline.
+        # This allows partial results when search is slow but we have some evidence.
         if hasattr(research_result, 'research_status'):
-            if research_result.research_status in (ResearchStatus.UNAVAILABLE, ResearchStatus.INSUFFICIENT):
-                pipeline_logger.error(f"[PIPELINE {source_entity_id}] RESEARCH QUALITY INSUFFICIENT: status={research_result.research_status}")
+            if research_result.research_status == ResearchStatus.UNAVAILABLE:
+                pipeline_logger.error(f"[PIPELINE {source_entity_id}] RESEARCH QUALITY UNAVAILABLE: status={research_result.research_status}")
                 result.status = "insufficient"
                 result.error_message = f"Research quality is {research_result.research_status.value}: not enough trustworthy evidence to establish node."
                 # Preserve diagnostic info
-                result.classifications = {"error": ["research_quality_insufficient", research_result.research_status.value]}
+                result.classifications = {"error": ["research_quality_unavailable", research_result.research_status.value]}
                 return result
+            elif research_result.research_status == ResearchStatus.INSUFFICIENT:
+                # Allow INSUFFICIENT to proceed with degraded extraction
+                pipeline_logger.warning(f"[PIPELINE {source_entity_id}] RESEARCH QUALITY INSUFFICIENT: status={research_result.research_status} - will attempt degraded extraction")
+                result.classifications = {"warning": ["research_quality_insufficient", research_result.research_status.value]}
+                # Do NOT return here - allow pipeline to continue with degraded extraction
         
         # If no evidence at all, fail
         if not result.evidence:

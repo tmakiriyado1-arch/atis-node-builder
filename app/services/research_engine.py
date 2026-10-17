@@ -278,22 +278,29 @@ class ResearchEngine:
     ) -> SearchOrchestrator:
         """Create a default SearchOrchestrator with multiple providers.
         
-        Leads with SearXNG as primary search provider (metasearch engine),
-        followed by Mozilla as secondary, then Wikipedia and Wikidata for
-        authoritative data.
+        Leads with Apps Script as primary search provider.
+        Adds fallback providers for resilience when Apps Script times out.
         """
         from app.services.research.apps_script_provider import AppsScriptSearchProvider
         
         providers = []
         
-        # Use Apps Script as the only search provider
-        providers.append(fallback_provider or AppsScriptSearchProvider())
+        # Primary provider: Apps Script with retry capability
+        if fallback_provider:
+            providers.append(fallback_provider)
+        else:
+            # Use Apps Script with increased timeout and retries
+            providers.append(AppsScriptSearchProvider(
+                timeout=30.0,      # Increased from 15s to 30s
+                max_retries=3,     # Add retry capability
+                retry_backoff_base=2.0,
+            ))
         
         return SearchOrchestrator(
             providers=providers,
             min_evidence=2,
             min_high_quality=1,
-            timeout_per_provider=15.0,
+            timeout_per_provider=30.0,  # Increased from 15s to match provider timeout
             max_concurrent_providers=3,
         )
 

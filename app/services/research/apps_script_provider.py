@@ -15,6 +15,7 @@ At runtime, the query is appended as a URL parameter:
 """
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote, urlparse, urlunparse
@@ -127,18 +128,22 @@ class AppsScriptSearchProvider(SearchProvider):
     def __init__(
         self,
         base_url: Optional[str] = None,
-        timeout: float = 15.0,
+        timeout: float = 30.0,
         user_agent: Optional[str] = None,
         max_results: int = 10,
+        max_retries: int = 3,
+        retry_backoff_base: float = 2.0,
     ) -> None:
         """Initialize the Apps Script search provider.
         
         Args:
             base_url: Base URL of the Apps Script gateway. If not provided,
                      uses APPS_SCRIPT_SEARCH_URL from config.
-            timeout: Request timeout in seconds
+            timeout: Request timeout in seconds (default 30s)
             user_agent: User-Agent string for HTTP requests
             max_results: Maximum number of results to return per query
+            max_retries: Maximum number of retry attempts on timeout (default 3)
+            retry_backoff_base: Base seconds for exponential backoff (default 2s)
         """
         # Generate instance identifier for tracking duplicate instances
         import uuid
@@ -148,6 +153,8 @@ class AppsScriptSearchProvider(SearchProvider):
         self.timeout = timeout
         self.user_agent = user_agent or self.USER_AGENT
         self.max_results = max_results
+        self.max_retries = max_retries
+        self.retry_backoff_base = retry_backoff_base
         
         if base_url:
             self.base_url = base_url.rstrip("/")
@@ -181,6 +188,8 @@ class AppsScriptSearchProvider(SearchProvider):
     ) -> List[Dict[str, Any]]:
         """Search using the Google Apps Script search gateway.
         
+        Implements retry logic with exponential backoff for timeout resilience.
+        
         Args:
             query: The search query string
             max_results: Maximum number of results to return
@@ -195,7 +204,8 @@ class AppsScriptSearchProvider(SearchProvider):
         
         logger.info(
             f"[APPS_SCRIPT] REQUEST_START instance={self._instance_id} "
-            f"query=\"{cleaned_query}\" max_results={max_results}"
+            f"query=\"{cleaned_query}\" max_results={max_results} "
+            f"max_retries={self.max_retries} backoff_base={self.retry_backoff_base}s"
         )
         
         if not cleaned_query:
@@ -214,11 +224,78 @@ class AppsScriptSearchProvider(SearchProvider):
             )
             return []
         
+        # Implement retry loop with exponential backoff
+        last_exception = None
+        for attempt in range(self.max_retries + 1):  # +1 for initial attempt
+            try:
+                result = await self._do_search_attempt(
+                    query=cleaned_query,
+                    max_results=max_results,
+                    request_start=request_start,
+                    attempt=attempt,
+                )
+                return result
+            except httpx.TimeoutException as e:
+                last_exception = e
+                if attempt < self.max_retries:
+                    backoff_seconds = self.retry_backoff_base ** attempt
+                    logger.warning(
+                        f"[APPS_SCRIPT] RETRY instance={self._instance_id} "
+                        f"attempt={attempt + 1}/{self.max_retries + 1} "
+                        f"backoff={backoff_seconds}s elapsed_ms={_get_elapsed_ms(request_start)}"
+                    )
+                    await asyncio.sleep(backoff_seconds)
+                else:
+                    # All retries exhausted
+                    elapsed_ms = _get_elapsed_ms(request_start)
+                    logger.error(
+                        f"[APPS_SCRIPT] ALL_RETRIES_EXHAUSTED instance={self._instance_id} "
+                        f"attempts={self.max_retries + 1} elapsed_ms={elapsed_ms}"
+                    )
+                    break
+        
+        # If we get here, all retries failed
+        elapsed_ms = _get_elapsed_ms(request_start)
+        if last_exception:
+            logger.error(
+                f"[APPS_SCRIPT] REQUEST_FAILED instance={self._instance_id} "
+                f"elapsed_ms={elapsed_ms} type={type(last_exception).__name__} "
+                f"message='All retry attempts failed'"
+            )
+        return []
+    
+    async def _do_search_attempt(
+        self,
+        query: str,
+        max_results: int,
+        request_start: float,
+        attempt: int,
+    ) -> List[Dict[str, Any]]:
+        """Execute a single search attempt.
+        
+        Args:
+            query: The cleaned search query
+            max_results: Maximum results to return
+            request_start: Monotonic start time for timing
+            attempt: Current attempt number (0-indexed)
+            
+        Returns:
+            List of result dictionaries
+            
+        Raises:
+            httpx.TimeoutException: If the request times out
+        """
+        
+        # Use cleaned_query for consistency with the original search method
+        cleaned_query = (query or "").strip()
         effective_max = min(max_results, self.max_results, 20)
         logger.info(
-            f"[APPS_SCRIPT] QUERY=\"{cleaned_query}\" MAX_RESULTS={effective_max} "
+            f"[APPS_SCRIPT] ATTEMPT={attempt + 1} QUERY=\"{cleaned_query}\" MAX_RESULTS={effective_max} "
             f"TIMEOUT_SECONDS={self.timeout} instance={self._instance_id}"
         )
+        
+        if not cleaned_query:
+            return []
         
         try:
             # Construct URL with properly encoded query parameter
@@ -373,7 +450,8 @@ class AppsScriptSearchProvider(SearchProvider):
                         f"elapsed_ms={elapsed_ms} type={type(e).__name__} "
                         f"message='{timeout_type}_timeout'"
                     )
-                    return []
+                    # Re-raise to trigger retry in the caller
+                    raise
                 except httpx.HTTPStatusError as e:
                     elapsed_ms = _get_elapsed_ms(request_start)
                     logger.error(
