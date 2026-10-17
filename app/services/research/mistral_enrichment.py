@@ -305,6 +305,7 @@ Ontology Rules:
                 extraction_method="mistral",
                 extracted_at=datetime.now(timezone.utc),
                 evidence_urls=valid_urls,
+                metadata={},
             )
         )
 

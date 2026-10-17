@@ -111,6 +111,7 @@ class AtomicEvidence:
             predicate=self.predicate,
             object=self.object,
             evidence_urls=[self.source_url] if self.source_url else [],
+            metadata=self.metadata,
         )
     
     def _evidence_type_to_field_name(self) -> str:

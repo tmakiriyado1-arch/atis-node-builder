@@ -354,6 +354,7 @@ class EntityPipelineService:
                         confidence=0.0,
                         extraction_method="search_result",
                         evidence_urls=[url] if url else [],
+                        metadata={},
                     )
                 )
             else:
@@ -370,6 +371,7 @@ class EntityPipelineService:
                         confidence=0.0,
                         extraction_method="search_result",
                         evidence_urls=[url] if url else [],
+                        metadata={},
                     )
                 )
         pipeline_logger.info(f"[ENRICH {entity_name}] LEGACY: Fallback generated {len(claims)} claims from {len(evidence)} evidence items")
