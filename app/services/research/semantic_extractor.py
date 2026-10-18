@@ -632,8 +632,12 @@ Ontology Rules:
                             json=payload,
                         )
                 
+                logger.info(f"[SEMANTIC_EXTRACTOR] LLM call attempt {attempt + 1} status_code={response.status_code}")
+                
                 response.raise_for_status()
                 json_response = response.json()
+                
+                logger.info(f"[SEMANTIC_EXTRACTOR] LLM response keys={list(json_response.keys())}")
                 
                 # Use canonical normalization
                 raw_content = extract_mistral_message_content(json_response, context="SEMANTIC_EXTRACTOR")
@@ -645,19 +649,31 @@ Ontology Rules:
                     return None
                 
                 logger.info(f"[SEMANTIC_EXTRACTOR] LLM_RESPONSE_TYPE=str LLM_NORMALIZED_TEXT_LENGTH={len(raw_content)}")
+                logger.info(f"[SEMANTIC_EXTRACTOR] LLM_RESPONSE_CONTENT_PREVIEW={raw_content[:200]}")
                 
                 try:
                     parsed = json.loads(raw_content)
-                    logger.info(f"[SEMANTIC_EXTRACTOR] JSON_PARSE_RESULT=success")
+                    logger.info(f"[SEMANTIC_EXTRACTOR] JSON_PARSE_RESULT=success parsed_keys={list(parsed.keys())}")
                     return parsed
                 except (TypeError, ValueError) as e:
                     logger.warning(f"[SEMANTIC_EXTRACTOR] JSON_PARSE_RESULT=failure error={e}")
+                    logger.warning(f"[SEMANTIC_EXTRACTOR] RAW_CONTENT={raw_content[:500]}")
                     if attempt < self.max_retries:
                         continue
                     return None
                     
+            except httpx.HTTPStatusError as e:
+                logger.error(f"[SEMANTIC_EXTRACTOR] HTTP error attempt {attempt + 1}: status={e.response.status_code} response={e.response.text[:200]}")
+                if attempt < self.max_retries:
+                    continue
+                return None
+            except httpx.ConnectError as e:
+                logger.error(f"[SEMANTIC_EXTRACTOR] Connection error attempt {attempt + 1}: {e}")
+                if attempt < self.max_retries:
+                    continue
+                return None
             except Exception as e:
-                logger.warning(f"[SEMANTIC_EXTRACTOR] LLM call attempt {attempt + 1} failed: {e}")
+                logger.error(f"[SEMANTIC_EXTRACTOR] LLM call attempt {attempt + 1} failed: {type(e).__name__}: {e}")
                 if attempt < self.max_retries:
                     continue
                 return None
@@ -819,6 +835,7 @@ Ontology Rules:
         results = []
         
         logger.info(f"[SEMANTIC_EXTRACTION {entity_name}] Starting extraction with {len(evidence_records)} evidence records")
+        logger.info(f"[SEMANTIC_EXTRACTION {entity_name}] API_KEY_SET={bool(self.api_key)} MODEL={self.model}")
         
         extraction_stats = {
             'input_records': len(evidence_records),
@@ -881,10 +898,16 @@ Ontology Rules:
             result = self._parse_extraction_result(entity_name, document, parsed)
             extraction_stats['total_atomic_evidence'] += len(result.atomic_evidence)
             extraction_stats['total_rejected'] += len(parsed.get("atomic_evidence", [])) - len(result.atomic_evidence)
+            logger.info(f"[SEMANTIC_EXTRACTION {entity_name}] Document {document.url[:60]}: atomic_evidence={len(result.atomic_evidence)} errors={len(result.extraction_errors)}")
             results.append(result)
         
         # Log extraction statistics
         logger.info(f"[SEMANTIC_EXTRACTION {entity_name}] Extraction stats: {extraction_stats}")
+        
+        # Detailed logging for debugging
+        logger.info(f"[SEMANTIC_EXTRACTION {entity_name}] Total results={len(results)} processed={extraction_stats['documents_processed']} skipped={extraction_stats['documents_skipped']} errors={extraction_stats['documents_with_errors']}")
+        logger.info(f"[SEMANTIC_EXTRACTION {entity_name}] LLM calls={extraction_stats['llm_calls']} success={extraction_stats['llm_success']} failure={extraction_stats['llm_failure']}")
+        logger.info(f"[SEMANTIC_EXTRACTION {entity_name}] Total atomic evidence={extraction_stats['total_atomic_evidence']} rejected={extraction_stats['total_rejected']}")
         
         return results
     
