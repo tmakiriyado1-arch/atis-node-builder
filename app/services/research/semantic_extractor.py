@@ -893,6 +893,7 @@ Ontology Rules:
             'llm_calls': 0,
             'llm_success': 0,
             'llm_failure': 0,
+            'llm_not_called': 0,  # Documents where LLM was skipped (no API key, etc.)
             'total_atomic_evidence': 0,
             'total_rejected': 0,
         }
@@ -929,6 +930,15 @@ Ontology Rules:
             prompt = self._build_extraction_prompt(entity_name, document, chunks)
             
             # Call Mistral
+            # Check if API key is available before attempting LLM call
+            if not self.api_key:
+                logger.warning(f"[SEMANTIC_EXTRACTION {entity_name}] No API key - skipping LLM call for {document.url[:60]}")
+                extraction_stats['llm_not_called'] += 1
+                # Fallback: create basic atomic evidence from document
+                result = self._create_fallback_extraction(entity_name, document)
+                results.append(result)
+                continue
+            
             extraction_stats['llm_calls'] += 1
             parsed = await self._call_mistral(prompt, client)
             
@@ -959,14 +969,21 @@ Ontology Rules:
         
         # Detailed logging for debugging
         logger.info(f"[SEMANTIC_EXTRACTION {entity_name}] Total results={len(results)} processed={extraction_stats['documents_processed']} skipped={extraction_stats['documents_skipped']} errors={extraction_stats['documents_with_errors']}")
-        logger.info(f"[SEMANTIC_EXTRACTION {entity_name}] LLM calls={extraction_stats['llm_calls']} success={extraction_stats['llm_success']} failure={extraction_stats['llm_failure']}")
+        logger.info(f"[SEMANTIC_EXTRACTION {entity_name}] LLM calls={extraction_stats['llm_calls']} success={extraction_stats['llm_success']} failure={extraction_stats['llm_failure']} not_called={extraction_stats['llm_not_called']}")
         logger.info(f"[SEMANTIC_EXTRACTION {entity_name}] Total atomic evidence={extraction_stats['total_atomic_evidence']} rejected={extraction_stats['total_rejected']}")
         
-        # Final summary
-        if extraction_stats['total_atomic_evidence'] == 0 and extraction_stats['llm_success'] > 0:
-            logger.error(f"[SEMANTIC_EXTRACTION {entity_name}] CRITICAL: LLM succeeded but extracted ZERO total atomic evidence from {extraction_stats['llm_success']} successful calls!")
-        elif extraction_stats['total_atomic_evidence'] == 0:
-            logger.error(f"[SEMANTIC_EXTRACTION {entity_name}] CRITICAL: NO atomic evidence extracted at all! LLM success={extraction_stats['llm_success']} failure={extraction_stats['llm_failure']}")
+        # Final summary - improved diagnostics
+        if extraction_stats['total_atomic_evidence'] == 0:
+            if extraction_stats['llm_success'] > 0:
+                logger.error(f"[SEMANTIC_EXTRACTION {entity_name}] CRITICAL: LLM succeeded but extracted ZERO atomic evidence from {extraction_stats['llm_success']} successful calls!")
+            elif extraction_stats['llm_failure'] > 0:
+                logger.error(f"[SEMANTIC_EXTRACTION {entity_name}] CRITICAL: LLM failed for all {extraction_stats['llm_failure']} calls, no fallback evidence generated")
+            elif extraction_stats['llm_not_called'] > 0:
+                logger.error(f"[SEMANTIC_EXTRACTION {entity_name}] CRITICAL: LLM not called for {extraction_stats['llm_not_called']} documents (no API key?), fallback may have been attempted")
+            elif extraction_stats['input_records'] == 0:
+                logger.error(f"[SEMANTIC_EXTRACTION {entity_name}] CRITICAL: No input evidence records provided to extractor!")
+            else:
+                logger.error(f"[SEMANTIC_EXTRACTION {entity_name}] CRITICAL: NO atomic evidence extracted! input={extraction_stats['input_records']} processed={extraction_stats['documents_processed']} skipped={extraction_stats['documents_skipped']}")
         
         return results
     
