@@ -128,7 +128,7 @@ class AppsScriptSearchProvider(SearchProvider):
     def __init__(
         self,
         base_url: Optional[str] = None,
-        timeout: float = 30.0,
+        timeout: float = 35.0,
         user_agent: Optional[str] = None,
         max_results: int = 10,
         max_retries: int = 3,
@@ -139,7 +139,7 @@ class AppsScriptSearchProvider(SearchProvider):
         Args:
             base_url: Base URL of the Apps Script gateway. If not provided,
                      uses APPS_SCRIPT_SEARCH_URL from config.
-            timeout: Request timeout in seconds (default 30s)
+            timeout: Request timeout in seconds (default 35s)
             user_agent: User-Agent string for HTTP requests
             max_results: Maximum number of results to return per query
             max_retries: Maximum number of retry attempts on timeout (default 3)

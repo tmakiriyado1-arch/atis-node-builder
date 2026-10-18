@@ -304,7 +304,7 @@ class ResearchEngine:
             providers=providers,
             min_evidence=2,
             min_high_quality=1,
-            timeout_per_provider=35.0,  # 5s buffer over provider timeout of 30s
+            timeout_per_provider=40.0,  # 10s buffer over provider timeout of 30s
             max_concurrent_providers=3,
         )
 
