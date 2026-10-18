@@ -297,12 +297,16 @@ def normalize_search_result(
     title_text = str(title).strip() or "Untitled result"
     snippet = result.get("snippet") or result.get("description") or result.get("text") or title_text
     snippet_text = str(snippet).strip() or title_text
+    # Preserve content if available in the result
+    content = result.get("content") or ""
+    content_text = str(content).strip()
 
     evidence_query = str(query or entity_name or "").strip()
     record = EvidenceRecord(
         url=canonical_url,
         title=title_text,
         snippet=snippet_text,
+        content=content_text,
         source=source,
         query=evidence_query,
         entity_id=entity_id,

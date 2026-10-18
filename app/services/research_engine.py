@@ -172,7 +172,8 @@ class ResearchEngine:
         is_test_provider = False
         if search_provider is not None:
             provider_class_name = getattr(search_provider.__class__, '__name__', '')
-            is_test_provider = 'Fake' in provider_class_name
+            provider_module = getattr(search_provider.__class__, '__module__', '')
+            is_test_provider = 'Fake' in provider_class_name or 'test' in provider_module.lower()
         
         # If no orchestrator provided, create one with default providers
         # But skip for test providers to avoid crawling issues
@@ -183,6 +184,9 @@ class ResearchEngine:
             # In Leanstral mode, we still create an orchestrator for discovery if needed
             # but it won't be used for the main research path
             self.orchestrator = self._create_default_orchestrator(search_provider)
+        elif self.orchestrator is None and is_test_provider:
+            # For test providers, don't create an orchestrator - use legacy path
+            pass
         
         # Initialize Leanstral research agent if enabled
         if self.use_leanstral:
@@ -300,7 +304,7 @@ class ResearchEngine:
             providers=providers,
             min_evidence=2,
             min_high_quality=1,
-            timeout_per_provider=30.0,  # Increased from 15s to match provider timeout
+            timeout_per_provider=35.0,  # 5s buffer over provider timeout of 30s
             max_concurrent_providers=3,
         )
 
@@ -615,11 +619,15 @@ class ResearchEngine:
                     logger.info(f"[EVIDENCE_FILTER {cleaned_name}] Fallback pipeline produced {len(atomic_claims)} atomic claims from {len(relevant_evidence)} evidence records")
                 
                 # Update evidence with relevant evidence
-                result.evidence = relevant_evidence
+                if not result.evidence:
+                    result.evidence = relevant_evidence
                 
                 # Skip the rest of the enrichment pipeline since we have claims
                 # Set deduped_evidence to empty to prevent fallback enrichment
-                deduped_evidence = []
+                if claims:
+                    deduped_evidence = []
+                # Track that we have claims from the new pipeline
+                has_claims_from_new_pipeline = bool(claims)
             else:
                 # No relevant evidence found
                 logger.warning(f"[RELEVANCE_FILTER {cleaned_name}] No relevant evidence found after filtering")
@@ -633,7 +641,8 @@ class ResearchEngine:
         
         # Only set execution status to failed if there's no evidence AND no orchestrator result
         # If we have orchestrator_result, the research_status already reflects the quality
-        if not deduped_evidence:
+        # Also check if we have claims from the new pipeline (semantic extraction path)
+        if not deduped_evidence and not getattr(result, 'evidence', None) and not getattr(result, 'claims', []):
             # Execution completed but no evidence found
             # research_status already set by orchestrator (INSUFFICIENT, UNAVAILABLE, etc.)
             result.error_message = (
@@ -868,12 +877,15 @@ class ResearchEngine:
                             extraction_method="fallback",  # Mark as fallback for traceability
                             extracted_at=datetime.now(),
                             evidence_urls=[evidence.url] if evidence.url else [],
+                            metadata={},
                         )
                     )
 
         result.claims = claims
-        result.evidence = deduped_evidence
-        result.sources_count = len(deduped_evidence)
+        # Preserve evidence if already set by a previous pipeline (e.g., semantic extraction)
+        if not result.evidence:
+            result.evidence = deduped_evidence
+        result.sources_count = len(result.evidence) if result.evidence else 0
         
         # Set execution status to completed (separate from research_status)
         result.status = "completed"

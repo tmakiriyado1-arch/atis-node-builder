@@ -526,12 +526,13 @@ Rules:
             return results
             
         except Exception as e:
-            # On any error, fallback to marking all as relevant
+            # On any error, fallback to marking all as relevant with clear error indication
+            logger.error(f"[RELEVANCE_FILTER] Exception in _filter_batch: {type(e).__name__}: {e}")
             return [
                 RelevanceResult(
                     url=record.url if record else "",
                     relevant=True,
-                    reason=f"LLM filtering failed: {str(e)}",
+                    reason=f"LLM filtering error: {type(e).__name__}: {str(e)[:100]}",
                     confidence=0.5,
                 )
                 for record in batch
