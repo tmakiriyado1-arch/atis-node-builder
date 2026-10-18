@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 MIN_CONTENT_LENGTH = 100
 
 # Block page indicators (content that suggests the page is not accessible)
+# Include the exact Google-style block message from production
 BLOCK_PAGE_INDICATORS = [
     "access denied",
     "forbidden",
@@ -47,6 +48,10 @@ BLOCK_PAGE_INDICATORS = [
     "javascript is required",
     "enable cookies",
     "browser verification",
+    "our systems have detected unusual traffic",
+    "unusual traffic from your computer network",
+    "please try your request again",
+    "verify you are not a robot",
 ]
 
 # Error page indicators (pages that returned 200 but are actually errors)

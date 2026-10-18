@@ -56,6 +56,9 @@ class CanonicalNodeRowBuilder:
 
         Uses word-boundary matching. This is the SINGLE source of truth
         for entity reference validation.
+        
+        Additionally checks for block page content that should NEVER pass
+        validation, even if it happens to contain the entity name.
         """
         import re
 
@@ -65,6 +68,34 @@ class CanonicalNodeRowBuilder:
         normalized_summary = summary.lower()
         # Include both canonical name and aliases
         targets = [entity_name.lower()] + [a.lower() for a in aliases if a]
+
+        # First, check for block page content - these should NEVER be accepted
+        # even if they contain the entity name
+        block_indicators = [
+            "our systems have detected unusual traffic",
+            "unusual traffic from your computer network",
+            "please try your request again",
+            "verify you are not a robot",
+            "access denied",
+            "forbidden",
+            "you do not have permission",
+            "permission denied",
+            "not authorized",
+            "unauthorized",
+            "blocked",
+            "cloudflare",
+            "bot detected",
+            "are you a robot",
+            "please verify you are human",
+            "captcha",
+            "security check",
+            "access temporarily blocked",
+            "sorry, you have been blocked",
+        ]
+        
+        for indicator in block_indicators:
+            if indicator in normalized_summary:
+                return False
 
         for target in targets:
             if re.search(rf'\b{re.escape(target)}\b', normalized_summary):

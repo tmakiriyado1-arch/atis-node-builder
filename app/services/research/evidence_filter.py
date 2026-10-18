@@ -210,6 +210,7 @@ class EvidenceFilterPipeline:
         self._navigation_patterns: FrozenSet[str] = self._build_navigation_patterns()
         
         # Block page indicators (content that suggests the page is not accessible)
+        # Include the exact Google-style block message from production
         self.BLOCK_PAGE_INDICATORS = [
             "access denied",
             "forbidden",
@@ -230,6 +231,9 @@ class EvidenceFilterPipeline:
             "javascript is required",
             "enable cookies",
             "browser verification",
+            "our systems have detected unusual traffic",
+            "unusual traffic from your computer network",
+            "please try your request again",
         ]
         
         # Error page indicators (pages that returned 200 but are actually errors)

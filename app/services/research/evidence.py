@@ -423,6 +423,7 @@ def classify_extraction_quality(content: str, html: str = "", url: str = "", sta
     html_lower = html.lower() if html else ""
     
     # Check for block pages / access denied
+    # Include the exact Google-style block message from production
     block_indicators = [
         "access denied",
         "forbidden",
@@ -443,6 +444,10 @@ def classify_extraction_quality(content: str, html: str = "", url: str = "", sta
         "javascript is required",
         "enable cookies",
         "browser verification",
+        "our systems have detected unusual traffic",
+        "unusual traffic from your computer network",
+        "please try your request again",
+        "verify you are not a robot",
     ]
     
     for indicator in block_indicators:
