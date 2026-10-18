@@ -651,6 +651,7 @@ Ontology Rules:
                 
                 if raw_content is None:
                     logger.warning(f"[SEMANTIC_EXTRACTOR] LLM_NORMALIZATION_RESULT=None")
+                    logger.warning(f"[MISTRAL_RESPONSE SEMANTIC_EXTRACTOR] LLM_NORMALIZATION_FAILED no_text_extracted")
                     if attempt < self.max_retries:
                         continue
                     return None

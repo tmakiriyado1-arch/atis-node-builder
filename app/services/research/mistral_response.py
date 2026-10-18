@@ -195,16 +195,37 @@ def extract_mistral_message_content(
         )
         return None
     
-    # Extract message
+    # Extract message - Mistral can return either "message" (chat API) or the content directly
     message = first_choice.get("message", {})
-    if not isinstance(message, dict):
+    
+    # If message is empty dict or None, check if content is directly on first_choice
+    # This handles both chat/completions and completions API response formats
+    if not isinstance(message, dict) or not message:
+        # Try to get content directly from first_choice
+        raw_content = first_choice.get("content")
+        if raw_content is not None:
+            logger.info(f"[MISTRAL_RESPONSE {context}] Using direct content from first_choice")
+            return normalize_mistral_content(raw_content, context=context)
+        # Also try 'text' field for completions API
+        raw_content = first_choice.get("text")
+        if raw_content is not None:
+            logger.info(f"[MISTRAL_RESPONSE {context}] Using direct text from first_choice")
+            return normalize_mistral_content(raw_content, context=context)
+        
         logger.warning(
             f"[MISTRAL_RESPONSE {context}] Message is not a dict: {type(message).__name__}"
         )
         return None
     
-    # Extract content
+    # Extract content from message
     raw_content = message.get("content")
+    
+    # If content is None, try alternative field names
+    if raw_content is None:
+        # Try 'text' field
+        raw_content = message.get("text")
+        if raw_content is not None:
+            logger.info(f"[MISTRAL_RESPONSE {context}] Using text field from message")
     
     # Normalize the content
     return normalize_mistral_content(raw_content, context=context)

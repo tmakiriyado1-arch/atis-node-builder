@@ -156,7 +156,7 @@ class EntityPipelineService:
                     error_message=f"Search provider failed: {exc}",
                     source_entity_id=source_entity_id,
                 )
-            from app.services.research.evidence import normalize_search_result, deduplicate_evidence
+            from app.services.research.evidence import normalize_search_result
             from app.services.research.search_orchestrator import ResearchStatus
             evidence_records = []
             for item in search_results:
