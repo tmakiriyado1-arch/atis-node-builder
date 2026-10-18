@@ -619,15 +619,24 @@ Ontology Rules:
         
         for attempt in range(self.max_retries + 1):
             try:
+                # Configure httpx timeout with connect and read timeouts separately
+                # This allows better control over different timeout scenarios
+                http_timeout = httpx.Timeout(
+                    connect=10.0,  # Connection timeout
+                    read=90.0,    # Read timeout (model response can be slow)
+                    write=10.0,   # Write timeout
+                    pool=5.0,     # Pool timeout
+                )
+                
                 if client is not None:
                     response = await client.post(
                         "https://api.mistral.ai/v1/chat/completions",
                         headers=headers,
                         json=payload,
-                        timeout=self.timeout,
+                        timeout=http_timeout,
                     )
                 else:
-                    async with httpx.AsyncClient(headers=headers, timeout=self.timeout) as http_client:
+                    async with httpx.AsyncClient(headers=headers, timeout=http_timeout) as http_client:
                         response = await http_client.post(
                             "https://api.mistral.ai/v1/chat/completions",
                             json=payload,
@@ -678,6 +687,16 @@ Ontology Rules:
                 return None
             except httpx.ConnectError as e:
                 logger.error(f"[SEMANTIC_EXTRACTOR] Connection error attempt {attempt + 1}: {e}")
+                if attempt < self.max_retries:
+                    continue
+                return None
+            except httpx.TimeoutException as e:
+                logger.error(f"[SEMANTIC_EXTRACTOR] ReadTimeout attempt {attempt + 1}: {e}")
+                if attempt < self.max_retries:
+                    continue
+                return None
+            except httpx.ReadTimeout as e:
+                logger.error(f"[SEMANTIC_EXTRACTOR] ReadTimeout attempt {attempt + 1}: {e}")
                 if attempt < self.max_retries:
                     continue
                 return None
@@ -968,7 +987,8 @@ Ontology Rules:
             ExtractionResult with fallback evidence
         """
         content = document.normalized_text
-        if not content:
+        if not content or not content.strip():
+            logger.warning(f"[SEMANTIC_EXTRACTION] Fallback extraction: No content available for {document.url[:60]}")
             return ExtractionResult(
                 document=document,
                 atomic_evidence=[],
@@ -976,7 +996,25 @@ Ontology Rules:
                 extraction_errors=["No content available for fallback"],
             )
         
+        # Check if content is too short to be meaningful
+        if len(content.strip()) < 10:
+            logger.warning(f"[SEMANTIC_EXTRACTION] Fallback extraction: Content too short ({len(content.strip())} chars) for {document.url[:60]}")
+            return ExtractionResult(
+                document=document,
+                atomic_evidence=[],
+                entity_match_verified=self._verify_entity_match(entity_name, document),
+                extraction_errors=["Content too short for fallback extraction"],
+            )
+        
+        # Check if content contains entity name - basic relevance check
+        entity_match_verified = self._verify_entity_match(entity_name, document)
+        if not entity_match_verified:
+            # Still try to extract if the entity name appears in the content
+            if entity_name and entity_name.strip() and entity_name.strip().lower() not in content.lower():
+                logger.warning(f"[SEMANTIC_EXTRACTION] Fallback extraction: Entity '{entity_name}' not found in content for {document.url[:60]}")
+        
         # Create a summary evidence item
+        logger.info(f"[SEMANTIC_EXTRACTION] Fallback extraction: Creating SUMMARY evidence from {document.url[:60]} content_len={len(content)}")
         atomic_evidence = [AtomicEvidence(
             subject=entity_name or "",
             predicate="described_as",
@@ -991,7 +1029,8 @@ Ontology Rules:
             extraction_method="fallback",
             metadata={
                 "source_type": document.source_type,
-                "entity_match_verified": self._verify_entity_match(entity_name, document),
+                "entity_match_verified": entity_match_verified,
+                "fallback_reason": "Mistral API call failed",
             },
         )]
         
