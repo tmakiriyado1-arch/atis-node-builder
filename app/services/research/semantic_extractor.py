@@ -599,6 +599,7 @@ Ontology Rules:
         import httpx
         
         if not self.api_key:
+            logger.error(f"[SEMANTIC_EXTRACTOR] No API key available - cannot call Mistral")
             return None
         
         payload = {
@@ -634,10 +635,16 @@ Ontology Rules:
                 
                 logger.info(f"[SEMANTIC_EXTRACTOR] LLM call attempt {attempt + 1} status_code={response.status_code}")
                 
-                response.raise_for_status()
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as e:
+                    logger.error(f"[SEMANTIC_EXTRACTOR] HTTPStatusError on attempt {attempt + 1}: status={e.response.status_code}")
+                    raise
+                
                 json_response = response.json()
                 
                 logger.info(f"[SEMANTIC_EXTRACTOR] LLM response keys={list(json_response.keys())}")
+                logger.info(f"[SEMANTIC_EXTRACTOR] LLM response model={json_response.get('model', 'unknown')}")
                 
                 # Use canonical normalization
                 raw_content = extract_mistral_message_content(json_response, context="SEMANTIC_EXTRACTOR")
@@ -658,6 +665,7 @@ Ontology Rules:
                 except (TypeError, ValueError) as e:
                     logger.warning(f"[SEMANTIC_EXTRACTOR] JSON_PARSE_RESULT=failure error={e}")
                     logger.warning(f"[SEMANTIC_EXTRACTOR] RAW_CONTENT={raw_content[:500]}")
+                    logger.warning(f"[SEMANTIC_EXTRACTOR] JSON response choices={json_response.get('choices', [])}")
                     if attempt < self.max_retries:
                         continue
                     return None
@@ -738,8 +746,11 @@ Ontology Rules:
         
         logger.info(f"[SEMANTIC_EXTRACTION] atomic_evidence_items={len(evidence_list)}")
         
-        for item in evidence_list:
+        for item_idx, item in enumerate(evidence_list):
+            logger.info(f"[SEMANTIC_EXTRACTION] Processing evidence item index={item_idx} type={type(item)}")
+            
             if not isinstance(item, dict):
+                logger.warning(f"[SEMANTIC_EXTRACTION] Skipping non-dict item at index={item_idx}: {item}")
                 continue
             
             # Extract fields
@@ -750,14 +761,19 @@ Ontology Rules:
             evidence_type_str = str(item.get("evidence_type") or "FACT").upper()
             chunk_index = int(item.get("chunk_index") or 0)
             
+            logger.info(f"[SEMANTIC_EXTRACTION] Item {item_idx}: subject='{subject[:40]}' predicate='{predicate}' object='{obj[:40]}' passage_len={len(passage)} evidence_type='{evidence_type_str}'")
+            
             # Validate evidence type
             try:
                 evidence_type = EvidenceType(evidence_type_str)
+                logger.info(f"[SEMANTIC_EXTRACTION] Item {item_idx}: evidence_type validated as {evidence_type}")
             except ValueError:
+                logger.warning(f"[SEMANTIC_EXTRACTION] Item {item_idx}: Invalid evidence_type '{evidence_type_str}', defaulting to FACT")
                 evidence_type = EvidenceType.FACT
             
             # Skip if no passage (required)
             if not passage:
+                logger.warning(f"[SEMANTIC_EXTRACTION] Item {item_idx}: Skipping - empty passage")
                 continue
             
             # Skip if subject doesn't match entity (conservative)
@@ -767,21 +783,29 @@ Ontology Rules:
                 if normalized_entity not in subject.lower():
                     # Check if the passage contains the entity
                     if normalized_entity not in passage.lower():
+                        logger.info(f"[SEMANTIC_EXTRACTION] Item {item_idx}: Skipping - entity '{normalized_entity}' not in subject or passage")
                         continue
+                else:
+                    logger.info(f"[SEMANTIC_EXTRACTION] Item {item_idx}: Entity match found in subject")
             
             # Validate predicate against ontology
             ontology = get_ontology()
             is_relationship = ontology.is_relationship_predicate(predicate)
             is_association = ontology.is_association_predicate(predicate)
             
+            logger.info(f"[SEMANTIC_EXTRACTION] Item {item_idx}: predicate='{predicate}' is_relationship={is_relationship} is_association={is_association}")
+            
             # If predicate is a relationship or association, ensure evidence type matches
             if is_relationship and evidence_type != EvidenceType.RELATIONSHIP:
+                logger.info(f"[SEMANTIC_EXTRACTION] Item {item_idx}: Overriding evidence_type to RELATIONSHIP (predicate is canonical relationship)")
                 # Override to RELATIONSHIP if predicate is canonical
                 evidence_type = EvidenceType.RELATIONSHIP
             elif is_association and evidence_type != EvidenceType.ASSOCIATION:
+                logger.info(f"[SEMANTIC_EXTRACTION] Item {item_idx}: Overriding evidence_type to ASSOCIATION (predicate is canonical association)")
                 evidence_type = EvidenceType.ASSOCIATION
             
             # Create atomic evidence
+            logger.info(f"[SEMANTIC_EXTRACTION] Item {item_idx}: ACCEPTED - Adding to atomic_evidence list")
             atomic_evidence.append(AtomicEvidence(
                 subject=subject,
                 predicate=predicate,
@@ -801,7 +825,11 @@ Ontology Rules:
             ))
         
         # Log final result
-        logger.info(f"[SEMANTIC_EXTRACTION] accepted_evidence={len(atomic_evidence)}, rejected={len(evidence_list) - len(atomic_evidence)}")
+        rejected_count = len(evidence_list) - len(atomic_evidence)
+        logger.info(f"[SEMANTIC_EXTRACTION] accepted_evidence={len(atomic_evidence)}, rejected={rejected_count}")
+        
+        if len(atomic_evidence) == 0 and len(evidence_list) > 0:
+            logger.warning(f"[SEMANTIC_EXTRACTION] ALL EVIDENCE REJECTED! evidence_list had {len(evidence_list)} items but 0 were accepted")
         
         return ExtractionResult(
             document=document,
@@ -888,6 +916,7 @@ Ontology Rules:
                 logger.info(f"[SEMANTIC_EXTRACTION {entity_name}] LLM call failed for {document.url[:60]}")
                 extraction_stats['llm_failure'] += 1
                 # Fallback: create basic atomic evidence from document
+                logger.warning(f"[SEMANTIC_EXTRACTION {entity_name}] LLM call failed, using fallback extraction for {document.url[:60]}")
                 result = self._create_fallback_extraction(entity_name, document)
                 results.append(result)
                 continue
@@ -898,6 +927,10 @@ Ontology Rules:
             result = self._parse_extraction_result(entity_name, document, parsed)
             extraction_stats['total_atomic_evidence'] += len(result.atomic_evidence)
             extraction_stats['total_rejected'] += len(parsed.get("atomic_evidence", [])) - len(result.atomic_evidence)
+            
+            if len(result.atomic_evidence) == 0:
+                logger.warning(f"[SEMANTIC_EXTRACTION {entity_name}] Document {document.url[:60]}: ZERO atomic_evidence extracted!")
+            
             logger.info(f"[SEMANTIC_EXTRACTION {entity_name}] Document {document.url[:60]}: atomic_evidence={len(result.atomic_evidence)} errors={len(result.extraction_errors)}")
             results.append(result)
         
@@ -908,6 +941,12 @@ Ontology Rules:
         logger.info(f"[SEMANTIC_EXTRACTION {entity_name}] Total results={len(results)} processed={extraction_stats['documents_processed']} skipped={extraction_stats['documents_skipped']} errors={extraction_stats['documents_with_errors']}")
         logger.info(f"[SEMANTIC_EXTRACTION {entity_name}] LLM calls={extraction_stats['llm_calls']} success={extraction_stats['llm_success']} failure={extraction_stats['llm_failure']}")
         logger.info(f"[SEMANTIC_EXTRACTION {entity_name}] Total atomic evidence={extraction_stats['total_atomic_evidence']} rejected={extraction_stats['total_rejected']}")
+        
+        # Final summary
+        if extraction_stats['total_atomic_evidence'] == 0 and extraction_stats['llm_success'] > 0:
+            logger.error(f"[SEMANTIC_EXTRACTION {entity_name}] CRITICAL: LLM succeeded but extracted ZERO total atomic evidence from {extraction_stats['llm_success']} successful calls!")
+        elif extraction_stats['total_atomic_evidence'] == 0:
+            logger.error(f"[SEMANTIC_EXTRACTION {entity_name}] CRITICAL: NO atomic evidence extracted at all! LLM success={extraction_stats['llm_success']} failure={extraction_stats['llm_failure']}")
         
         return results
     
