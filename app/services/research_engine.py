@@ -96,6 +96,7 @@ class ResearchResult:
     status: str = "completed"  # Execution status: started, completed, failed
     error_message: Optional[str] = None
     evidence: List[EvidenceRecord] = field(default_factory=list)
+    errors: List[str] = field(default_factory=list)
     research_status: ResearchStatus = ResearchStatus.COMPLETE  # Research quality status
     providers_attempted: List[str] = field(default_factory=list)
     providers_succeeded: List[str] = field(default_factory=list)
