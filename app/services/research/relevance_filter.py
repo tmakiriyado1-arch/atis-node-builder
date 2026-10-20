@@ -396,13 +396,16 @@ Rules:
             List of RelevanceResult objects
         """
         if not self.api_key:
-            # If no API key, mark all as relevant (fallback behavior)
+            # If no API key, DO NOT mark all as relevant
+            # A failed classifier must NOT be treated as a positive classification
+            # Return results with unknown status (relevant=False with failure reason)
+            logger.warning("[RELEVANCE_FILTER] No API key available, cannot perform LLM filtering")
             return [
                 RelevanceResult(
                     url=record.url if record else "",
-                    relevant=True,
+                    relevant=False,
                     reason="No API key available for relevance filtering",
-                    confidence=0.5,
+                    confidence=0.0,  # Explicitly 0.0 indicates failure
                 )
                 for record in batch
             ]
@@ -451,7 +454,7 @@ Rules:
             
             if raw_content is None:
                 logger.warning(f"[RELEVANCE_FILTER] LLM_NORMALIZATION_RESULT=None, cannot parse response")
-                logger.warning(f"[RELEVANCE_FILTER] LLM filtering failed, returning fallback")
+                logger.warning(f"[RELEVANCE_FILTER] LLM filtering failed, returning failure results")
                 # Do NOT mark as relevant=True - this is an LLM failure
                 # Return a result that clearly indicates failure
                 return [
@@ -470,7 +473,7 @@ Rules:
                 logger.info(f"[RELEVANCE_FILTER] JSON_PARSE_RESULT=success")
             except (TypeError, ValueError) as e:
                 logger.warning(f"[RELEVANCE_FILTER] JSON_PARSE_RESULT=failure error={e}")
-                logger.warning(f"[RELEVANCE_FILTER] LLM filtering failed, returning fallback")
+                logger.warning(f"[RELEVANCE_FILTER] LLM filtering failed, returning failure results")
                 # Do NOT mark as relevant=True - this is an LLM failure
                 return [
                     RelevanceResult(
@@ -485,7 +488,7 @@ Rules:
             # Parse results
             if not isinstance(parsed, list):
                 logger.warning(f"[RELEVANCE_FILTER] LLM returned non-array response: type={type(parsed).__name__}")
-                logger.warning(f"[RELEVANCE_FILTER] LLM filtering failed, returning fallback")
+                logger.warning(f"[RELEVANCE_FILTER] LLM filtering failed, returning failure results")
                 # Do NOT mark as relevant=True - this is an LLM failure
                 return [
                     RelevanceResult(
@@ -531,14 +534,16 @@ Rules:
             return results
             
         except Exception as e:
-            # On any error, fallback to marking all as relevant with clear error indication
+            # On any error, DO NOT mark as relevant=True
+            # A failed classifier must NOT be treated as a positive classification
+            # Return results with unknown status (relevant=False with failure reason)
             logger.error(f"[RELEVANCE_FILTER] Exception in _filter_batch: {type(e).__name__}: {e}")
             return [
                 RelevanceResult(
                     url=record.url if record else "",
-                    relevant=True,
+                    relevant=False,
                     reason=f"LLM filtering error: {type(e).__name__}: {str(e)[:100]}",
-                    confidence=0.5,
+                    confidence=0.0,
                 )
                 for record in batch
             ]

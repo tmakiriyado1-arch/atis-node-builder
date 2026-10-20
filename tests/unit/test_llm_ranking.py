@@ -24,8 +24,8 @@ class TestLLMRanking:
         """Test that LLMRanker initializes correctly."""
         ranker = LLMRanker()
         assert ranker.api_key == ""
-        assert ranker.model == "mistral-large-latest"
-        assert ranker.max_results == 10
+        assert ranker.model == "labs-leanstral-1-5"
+        assert ranker.max_results == 25
     
     def test_ranker_with_custom_config(self):
         """Test LLMRanker with custom configuration."""
@@ -169,13 +169,13 @@ class TestLLMRankingWithMock:
             {},
         )
         
-        # Should return all results with default ranking
+        # Should return all results with failure status (not default ranking)
         assert len(result.ranked_results) == 2
-        assert len(result.top_results) == 2
-        # All should have default values
+        assert len(result.top_results) == 0  # No top results without LLM
+        # All should have failure values (0.0 score, unknown relevance)
         for ranked in result.ranked_results:
-            assert ranked.rank_score == 0.5
-            assert ranked.relevance == "medium"
+            assert ranked.rank_score == 0.0
+            assert ranked.relevance == "unknown"
             assert ranked.validation == "uncertain"
     
     @pytest.mark.asyncio
@@ -293,7 +293,7 @@ class TestLLMRankingEdgeCases:
         
         # Should return default ranking
         assert len(result.ranked_results) == 1
-        assert result.ranked_results[0].rank_score == 0.5
+        assert result.ranked_results[0].rank_score == 0.0
     
     @pytest.mark.asyncio
     async def test_rank_with_http_error(self):
@@ -321,7 +321,7 @@ class TestLLMRankingEdgeCases:
         
         # Should return default ranking
         assert len(result.ranked_results) == 1
-        assert result.ranked_results[0].rank_score == 0.5
+        assert result.ranked_results[0].rank_score == 0.0
     
     def test_parse_rankings_with_code_block(self):
         """Test parsing rankings from code block response."""

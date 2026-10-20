@@ -159,20 +159,24 @@ Required: Return ONLY valid JSON, no other text."""
         
         if not self.api_key:
             logger.warning("[LLM_RANKER] No Mistral API key, returning unranked results")
-            # DO NOT report ranking as successful when no API key
-            # Return results with explicit failure status
+            # DO NOT mark all as irrelevant when LLM is unavailable
+            # Return results with unknown status, preserving all candidates
+            # Use deterministic ordering (by URL) as fallback
+            sorted_records = sorted(evidence_records, key=lambda r: r.url or "")
             return RankingResult(
                 ranked_results=[
                     RankedResult(
                         evidence_record=er,
-                        rank_score=0.0,  # Explicitly 0.0 for failure
-                        relevance="irrelevant",
-                        validation="invalid",
+                        rank_score=0.0,  # Explicitly 0.0 indicates no LLM ranking
+                        relevance="unknown",  # NOT irrelevant - LLM unavailable
+                        validation="uncertain",  # NOT invalid - LLM unavailable
                         reasoning="No LLM available for ranking - no API key",
-                        query_variation=query_variations[0] if query_variations else "",
+                        query_variation=query_variations[idx] if query_variations and idx < len(query_variations) else "",
                     )
-                    for er in evidence_records
+                    for idx, er in enumerate(sorted_records)
                 ],
+                top_results=[],  # No top results without LLM
+                rejected_results=[],  # No rejections without LLM
                 ranking_metadata={"status": "failed", "error": "No API key", "fallback_applied": False},
             )
         
@@ -215,20 +219,24 @@ Required: Return ONLY valid JSON, no other text."""
         response = await self._call_llm(prompt, client=client)
         if not response:
             logger.warning("[LLM_RANKER] LLM call failed, returning unranked results")
-            # DO NOT report ranking as successful when LLM call failed
-            # Return results with explicit failure status
+            # DO NOT mark all as irrelevant when LLM call failed
+            # Return results with unknown status, preserving all candidates
+            # Use deterministic ordering (by URL) as fallback
+            sorted_records = sorted(evidence_records, key=lambda r: r.url or "")
             return RankingResult(
                 ranked_results=[
                     RankedResult(
                         evidence_record=er,
-                        rank_score=0.0,  # Explicitly 0.0 for failure
-                        relevance="irrelevant",
-                        validation="invalid",
+                        rank_score=0.0,  # Explicitly 0.0 indicates no LLM ranking
+                        relevance="unknown",  # NOT irrelevant - LLM failed
+                        validation="uncertain",  # NOT invalid - LLM failed
                         reasoning="LLM call failed - no response",
                         query_variation=query_variations[idx] if query_variations and idx < len(query_variations) else "",
                     )
-                    for idx, er in enumerate(evidence_records)
+                    for idx, er in enumerate(sorted_records)
                 ],
+                top_results=[],  # No top results without LLM
+                rejected_results=[],  # No rejections without LLM
                 ranking_metadata={"status": "failed", "error": "LLM call returned None", "fallback_applied": False},
             )
         
@@ -244,19 +252,24 @@ Required: Return ONLY valid JSON, no other text."""
         except Exception as e:
             logger.error(f"[LLM_RANKER] Failed to parse rankings: {e}")
             logger.error(f"[LLM_RANKER] LLM ranking failed, returning unranked results")
-            # DO NOT report ranking as successful when parsing failed
+            # DO NOT mark all as irrelevant when parsing failed
+            # Return results with unknown status, preserving all candidates
+            # Use deterministic ordering (by URL) as fallback
+            sorted_records = sorted(evidence_records, key=lambda r: r.url or "")
             return RankingResult(
                 ranked_results=[
                     RankedResult(
                         evidence_record=er,
-                        rank_score=0.0,  # Explicitly 0.0 for failure
-                        relevance="irrelevant",
-                        validation="invalid",
+                        rank_score=0.0,  # Explicitly 0.0 indicates no LLM ranking
+                        relevance="unknown",  # NOT irrelevant - parsing failed
+                        validation="uncertain",  # NOT invalid - parsing failed
                         reasoning=f"Ranking parse failed: {e}",
                         query_variation=query_variations[idx] if query_variations and idx < len(query_variations) else "",
                     )
-                    for idx, er in enumerate(evidence_records)
+                    for idx, er in enumerate(sorted_records)
                 ],
+                top_results=[],  # No top results without LLM
+                rejected_results=[],  # No rejections without LLM
                 ranking_metadata={"status": "failed", "error": str(e), "fallback_applied": False},
             )
     
@@ -282,13 +295,17 @@ Required: Return ONLY valid JSON, no other text."""
             return []
         
         if not self.api_key:
-            # Without LLM, just return top results by score
+            # Without LLM, use deterministic fallback
+            # Only select records that have non-zero scores (explicitly ranked)
+            # Records with score 0.0 (LLM unavailable) should not be selected
             sorted_results = sorted(
                 ranking_result.ranked_results,
                 key=lambda r: r.rank_score,
                 reverse=True
             )
-            return [r.evidence_record for r in sorted_results[:max_results or self.max_results]]
+            # Filter out records with 0.0 score (LLM unavailable)
+            valid_results = [r for r in sorted_results if r.rank_score > 0.0]
+            return [r.evidence_record for r in valid_results[:max_results or self.max_results]]
         
         # Prepare data for selection
         ranked_data = []
@@ -340,13 +357,16 @@ Required: Return ONLY valid JSON, no other text."""
             logger.error(f"[LLM_RANKER] Failed to parse selection: {e}")
             # DO NOT silently use fallback - explicitly log and use deterministic fallback
             logger.warning("[LLM_RANKER] Selection parsing failed, using deterministic fallback")
-            # Fallback to score-based selection with explicit tracking
+            # Fallback to score-based selection, but only for records with non-zero scores
+            # Records with score 0.0 (LLM unavailable) should not be selected
             sorted_results = sorted(
                 ranking_result.ranked_results,
                 key=lambda r: r.rank_score,
                 reverse=True
             )
-            return [r.evidence_record for r in sorted_results[:max_select]]
+            # Filter out records with 0.0 score (LLM unavailable)
+            valid_results = [r for r in sorted_results if r.rank_score > 0.0]
+            return [r.evidence_record for r in valid_results[:max_select]]
     
     def _parse_rankings(
         self,
@@ -404,19 +424,25 @@ Required: Return ONLY valid JSON, no other text."""
             )
         except Exception as e:
             logger.error(f"[LLM_RANKER] Failed to parse response: {e}")
-            # Return default ranking
+            # DO NOT return default ranking with 0.5 scores
+            # Return results with explicit failure status
+            # Use deterministic ordering (by URL) as fallback
+            sorted_records = sorted(evidence_records, key=lambda r: r.url or "")
             return RankingResult(
                 ranked_results=[
                     RankedResult(
                         evidence_record=er,
-                        rank_score=0.5,
-                        relevance="medium",
+                        rank_score=0.0,  # Explicitly 0.0 indicates parsing failed
+                        relevance="unknown",  # NOT medium - parsing failed
                         validation="uncertain",
                         reasoning=f"Parse error: {e}",
                         query_variation=query_variations[idx] if query_variations and idx < len(query_variations) else "",
                     )
-                    for idx, er in enumerate(evidence_records)
+                    for idx, er in enumerate(sorted_records)
                 ],
+                top_results=[],  # No top results when parsing failed
+                rejected_results=[],  # No rejections when parsing failed
+                ranking_metadata={"status": "failed", "error": str(e), "fallback_applied": False},
             )
     
     async def _call_llm(

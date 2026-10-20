@@ -416,9 +416,14 @@ async def test_no_api_key_fallback():
     
     result = await filter_obj.filter("Test Entity", [evidence1, evidence2])
     
-    # With no API key, all should be marked as relevant (fallback)
-    assert len(result.relevant_evidence) == 2
-    assert len(result.irrelevant_evidence) == 0
+    # With no API key, all should be marked as irrelevant (failure, not fallback)
+    # A failed classifier must NOT be treated as a positive classification
+    assert len(result.relevant_evidence) == 0
+    assert len(result.irrelevant_evidence) == 2
+    # All results should have failure confidence (0.0)
+    for r in result.results:
+        assert r.relevant == False
+        assert r.confidence == 0.0
 
 
 # =============================================================================
