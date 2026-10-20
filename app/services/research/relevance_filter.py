@@ -79,6 +79,7 @@ class RelevanceResult:
     relevant: bool
     reason: str
     confidence: float
+    classification_status: str = "classified"  # "classified", "unclassified", "failed"
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -86,6 +87,7 @@ class RelevanceResult:
             "relevant": self.relevant,
             "reason": self.reason,
             "confidence": self.confidence,
+            "classification_status": self.classification_status,
         }
 
 
@@ -97,11 +99,14 @@ class RelevanceFilterResult:
     results: List[RelevanceResult]
     filtered_count: int
     kept_count: int
+    unclassified_evidence: List[EvidenceRecord] = field(default_factory=list)
+    unclassified_count: int = 0
     
     def to_dict(self) -> Dict[str, Any]:
         return {
             "filtered_count": self.filtered_count,
             "kept_count": self.kept_count,
+            "unclassified_count": self.unclassified_count,
             "results": [r.to_dict() for r in self.results],
         }
 
@@ -302,9 +307,11 @@ Rules:
             return RelevanceFilterResult(
                 relevant_evidence=[],
                 irrelevant_evidence=[],
+                unclassified_evidence=[],
                 results=[],
                 filtered_count=0,
                 kept_count=0,
+                unclassified_count=0,
             )
         
         logger.info(f"[RELEVANCE_FILTER] entity={entity_name} input={len(evidence_records)}")
@@ -327,22 +334,26 @@ Rules:
             return RelevanceFilterResult(
                 relevant_evidence=[],
                 irrelevant_evidence=list(evidence_records),
+                unclassified_evidence=[],
                 results=[
                     RelevanceResult(
                         url=record.url if record else "",
                         relevant=False,
                         reason="Quality filter: low content or unusable",
                         confidence=1.0,
+                        classification_status="classified",
                     )
                     for record in evidence_records
                 ],
                 filtered_count=len(evidence_records),
                 kept_count=0,
+                unclassified_count=0,
             )
         
         # Step 2: LLM-based relevance filtering in batches
         relevant_evidence = []
         irrelevant_evidence = list(quality_filtered)
+        unclassified_evidence = []
         results = []
         
         # Process in batches
@@ -352,31 +363,36 @@ Rules:
             
             for result in batch_results:
                 results.append(result)
-                if result.relevant:
-                    # Find the corresponding evidence record
-                    for record in batch:
-                        if record.url == result.url:
-                            relevant_evidence.append(record)
-                            break
-                else:
-                    # Find the corresponding evidence record
-                    for record in batch:
-                        if record.url == result.url:
-                            irrelevant_evidence.append(record)
-                            break
+                # Find the corresponding evidence record
+                matching_record = None
+                for record in batch:
+                    if record.url == result.url:
+                        matching_record = record
+                        break
+                
+                if matching_record:
+                    if result.classification_status == "unclassified":
+                        # LLM failure: preserve evidence as unclassified
+                        unclassified_evidence.append(matching_record)
+                    elif result.relevant:
+                        relevant_evidence.append(matching_record)
+                    else:
+                        irrelevant_evidence.append(matching_record)
         
         # Log final results
-        logger.info(f"[RELEVANCE_FILTER] llm_evaluated={len(for_llm)} relevant={len(relevant_evidence)} irrelevant={len(irrelevant_evidence)}")
+        logger.info(f"[RELEVANCE_FILTER] llm_evaluated={len(for_llm)} relevant={len(relevant_evidence)} irrelevant={len(irrelevant_evidence)} unclassified={len(unclassified_evidence)}")
         
         for result in results:
-            logger.info(f"[RELEVANCE_FILTER] url={result.url[:80]} relevant={result.relevant} confidence={result.confidence:.2f} reason={result.reason}")
+            logger.info(f"[RELEVANCE_FILTER] url={result.url[:80]} relevant={result.relevant} confidence={result.confidence:.2f} reason={result.reason} status={result.classification_status}")
         
         return RelevanceFilterResult(
             relevant_evidence=relevant_evidence,
             irrelevant_evidence=irrelevant_evidence,
+            unclassified_evidence=unclassified_evidence,
             results=results,
             filtered_count=len(irrelevant_evidence),
             kept_count=len(relevant_evidence),
+            unclassified_count=len(unclassified_evidence),
         )
 
     async def _filter_batch(
@@ -398,7 +414,7 @@ Rules:
         if not self.api_key:
             # If no API key, DO NOT mark all as relevant
             # A failed classifier must NOT be treated as a positive classification
-            # Return results with unknown status (relevant=False with failure reason)
+            # Return results with unclassified status to preserve evidence
             logger.warning("[RELEVANCE_FILTER] No API key available, cannot perform LLM filtering")
             return [
                 RelevanceResult(
@@ -406,6 +422,7 @@ Rules:
                     relevant=False,
                     reason="No API key available for relevance filtering",
                     confidence=0.0,  # Explicitly 0.0 indicates failure
+                    classification_status="unclassified",
                 )
                 for record in batch
             ]
@@ -454,7 +471,7 @@ Rules:
             
             if raw_content is None:
                 logger.warning(f"[RELEVANCE_FILTER] LLM_NORMALIZATION_RESULT=None, cannot parse response")
-                logger.warning(f"[RELEVANCE_FILTER] LLM filtering failed, returning failure results")
+                logger.warning(f"[RELEVANCE_FILTER] LLM filtering failed, returning unclassified results")
                 # Do NOT mark as relevant=True - this is an LLM failure
                 # Return a result that clearly indicates failure
                 return [
@@ -463,6 +480,7 @@ Rules:
                         relevant=False,
                         reason="LLM filtering failed: no content returned",
                         confidence=0.0,
+                        classification_status="unclassified",
                     )
                     for record in batch
                 ]
@@ -473,7 +491,7 @@ Rules:
                 logger.info(f"[RELEVANCE_FILTER] JSON_PARSE_RESULT=success")
             except (TypeError, ValueError) as e:
                 logger.warning(f"[RELEVANCE_FILTER] JSON_PARSE_RESULT=failure error={e}")
-                logger.warning(f"[RELEVANCE_FILTER] LLM filtering failed, returning failure results")
+                logger.warning(f"[RELEVANCE_FILTER] LLM filtering failed, returning unclassified results")
                 # Do NOT mark as relevant=True - this is an LLM failure
                 return [
                     RelevanceResult(
@@ -481,6 +499,7 @@ Rules:
                         relevant=False,
                         reason=f"LLM filtering failed: invalid JSON ({e})",
                         confidence=0.0,
+                        classification_status="unclassified",
                     )
                     for record in batch
                 ]
@@ -488,7 +507,7 @@ Rules:
             # Parse results
             if not isinstance(parsed, list):
                 logger.warning(f"[RELEVANCE_FILTER] LLM returned non-array response: type={type(parsed).__name__}")
-                logger.warning(f"[RELEVANCE_FILTER] LLM filtering failed, returning failure results")
+                logger.warning(f"[RELEVANCE_FILTER] LLM filtering failed, returning unclassified results")
                 # Do NOT mark as relevant=True - this is an LLM failure
                 return [
                     RelevanceResult(
@@ -496,6 +515,7 @@ Rules:
                         relevant=False,
                         reason="LLM filtering failed: non-array response",
                         confidence=0.0,
+                        classification_status="unclassified",
                     )
                     for record in batch
                 ]
@@ -515,6 +535,7 @@ Rules:
                     relevant=relevant,
                     reason=reason,
                     confidence=confidence,
+                    classification_status="classified",
                 ))
             
             # If we got fewer results than batch size, fill in defaults
@@ -529,6 +550,7 @@ Rules:
                         relevant=True,
                         reason="Not evaluated by LLM",
                         confidence=0.5,
+                        classification_status="unclassified",
                     ))
             
             return results
@@ -536,7 +558,7 @@ Rules:
         except Exception as e:
             # On any error, DO NOT mark as relevant=True
             # A failed classifier must NOT be treated as a positive classification
-            # Return results with unknown status (relevant=False with failure reason)
+            # Return results with unclassified status (relevant=False with failure reason)
             logger.error(f"[RELEVANCE_FILTER] Exception in _filter_batch: {type(e).__name__}: {e}")
             return [
                 RelevanceResult(
@@ -544,6 +566,7 @@ Rules:
                     relevant=False,
                     reason=f"LLM filtering error: {type(e).__name__}: {str(e)[:100]}",
                     confidence=0.0,
+                    classification_status="unclassified",
                 )
                 for record in batch
             ]

@@ -393,8 +393,13 @@ async def test_empty_content_filtered():
 # Test: No API key fallback behavior
 # =============================================================================
 @pytest.mark.asyncio
-async def test_no_api_key_fallback():
-    """Test that when no API key is available, all evidence is retained."""
+async def test_no_api_key_preserves_unclassified_evidence():
+    """Test that when no API key is available, evidence is marked as unclassified, not irrelevant.
+    
+    This is a regression test for the review finding:
+    LLM failure must NOT cause evidence to be discarded as irrelevant.
+    Evidence must remain available to downstream stages.
+    """
     evidence1 = EvidenceRecord(
         url="https://example.com/page1",
         title="Page 1",
@@ -416,14 +421,17 @@ async def test_no_api_key_fallback():
     
     result = await filter_obj.filter("Test Entity", [evidence1, evidence2])
     
-    # With no API key, all should be marked as irrelevant (failure, not fallback)
+    # With no API key, evidence should be unclassified, not irrelevant
     # A failed classifier must NOT be treated as a positive classification
-    assert len(result.relevant_evidence) == 0
-    assert len(result.irrelevant_evidence) == 2
-    # All results should have failure confidence (0.0)
+    assert len(result.relevant_evidence) == 0, "No evidence should be marked as relevant on LLM failure"
+    assert len(result.irrelevant_evidence) == 0, "No evidence should be marked as irrelevant on LLM failure"
+    assert len(result.unclassified_evidence) == 2, "All evidence should be unclassified on LLM failure"
+    assert result.unclassified_count == 2
+    # All results should have failure confidence (0.0) and unclassified status
     for r in result.results:
         assert r.relevant == False
         assert r.confidence == 0.0
+        assert r.classification_status == "unclassified"
 
 
 # =============================================================================
@@ -464,4 +472,142 @@ async def test_batch_processing():
         
         assert len(result.relevant_evidence) == 5
         assert len(result.irrelevant_evidence) == 0
+        assert len(result.unclassified_evidence) == 0
         assert mock_filter_batch.call_count == 2
+
+
+# =============================================================================
+# Regression Tests for Review Finding: LLM Failure Semantics
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_llm_timeout_preserves_evidence():
+    """Regression test: LLM timeout must NOT discard evidence.
+    
+    Simulates an LLM timeout and verifies that evidence is marked as unclassified
+    rather than being discarded as irrelevant.
+    """
+    import httpx
+    from unittest.mock import AsyncMock, MagicMock
+    
+    evidence1 = EvidenceRecord(
+        url="https://example.com/page1",
+        title="Page 1",
+        snippet="Content 1",
+        content="Content 1",
+        normalized_text="Content 1",
+        source="page_crawl",
+    )
+    evidence2 = EvidenceRecord(
+        url="https://example.com/page2",
+        title="Page 2",
+        snippet="Content 2",
+        content="Content 2",
+        normalized_text="Content 2",
+        source="page_crawl",
+    )
+    
+    filter_obj = RelevanceFilter(api_key="test_key", min_content_length=10)
+    
+    # Mock client with timeout
+    mock_client = MagicMock(spec=httpx.AsyncClient)
+    mock_client.post = AsyncMock(side_effect=httpx.TimeoutException("Request timeout"))
+    
+    result = await filter_obj.filter("Test Entity", [evidence1, evidence2], client=mock_client)
+    
+    # Evidence must be unclassified, not irrelevant
+    assert len(result.relevant_evidence) == 0
+    assert len(result.irrelevant_evidence) == 0
+    assert len(result.unclassified_evidence) == 2
+    assert result.unclassified_count == 2
+    for r in result.results:
+        assert r.classification_status == "unclassified"
+        assert r.relevant == False
+        assert r.confidence == 0.0
+
+
+@pytest.mark.asyncio
+async def test_malformed_llm_response_preserves_evidence():
+    """Regression test: Malformed LLM response must NOT discard evidence."""
+    import httpx
+    from unittest.mock import AsyncMock, MagicMock
+    
+    evidence = EvidenceRecord(
+        url="https://example.com/page1",
+        title="Page 1",
+        snippet="Content 1",
+        content="Content 1",
+        normalized_text="Content 1",
+        source="page_crawl",
+    )
+    
+    filter_obj = RelevanceFilter(api_key="test_key", min_content_length=10)
+    
+    # Mock client with malformed JSON response
+    mock_client = MagicMock(spec=httpx.AsyncClient)
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {"choices": [{"message": {"content": "not valid json"}}]}
+    mock_client.post = AsyncMock(return_value=mock_response)
+    
+    result = await filter_obj.filter("Test Entity", [evidence], client=mock_client)
+    
+    # Evidence must be unclassified
+    assert len(result.unclassified_evidence) == 1
+    assert len(result.irrelevant_evidence) == 0
+    assert len(result.relevant_evidence) == 0
+    assert result.results[0].classification_status == "unclassified"
+
+
+@pytest.mark.asyncio
+async def test_missing_api_key_preserves_evidence():
+    """Regression test: Missing API key must NOT discard evidence."""
+    evidence = EvidenceRecord(
+        url="https://example.com/page1",
+        title="Page 1",
+        snippet="Content 1",
+        content="Content 1",
+        normalized_text="Content 1",
+        source="page_crawl",
+    )
+    
+    filter_obj = RelevanceFilter(api_key=None, min_content_length=10)
+    
+    result = await filter_obj.filter("Test Entity", [evidence])
+    
+    # Evidence must be unclassified
+    assert len(result.unclassified_evidence) == 1
+    assert len(result.irrelevant_evidence) == 0
+    assert len(result.relevant_evidence) == 0
+    assert result.results[0].classification_status == "unclassified"
+    assert "No API key" in result.results[0].reason
+
+
+@pytest.mark.asyncio
+async def test_llm_exception_preserves_evidence():
+    """Regression test: LLM exception must NOT discard evidence."""
+    import httpx
+    from unittest.mock import AsyncMock, MagicMock
+    
+    evidence = EvidenceRecord(
+        url="https://example.com/page1",
+        title="Page 1",
+        snippet="Content 1",
+        content="Content 1",
+        normalized_text="Content 1",
+        source="page_crawl",
+    )
+    
+    filter_obj = RelevanceFilter(api_key="test_key", min_content_length=10)
+    
+    # Mock client with exception
+    mock_client = MagicMock(spec=httpx.AsyncClient)
+    mock_client.post = AsyncMock(side_effect=Exception("API connection failed"))
+    
+    result = await filter_obj.filter("Test Entity", [evidence], client=mock_client)
+    
+    # Evidence must be unclassified
+    assert len(result.unclassified_evidence) == 1
+    assert len(result.irrelevant_evidence) == 0
+    assert result.results[0].classification_status == "unclassified"
+    assert "LLM filtering error" in result.results[0].reason

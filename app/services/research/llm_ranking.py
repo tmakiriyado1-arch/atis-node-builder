@@ -31,6 +31,7 @@ class RankedResult:
     validation: str  # "valid", "partial", "invalid", "uncertain"
     reasoning: str  # LLM's explanation for the ranking
     query_variation: str  # Which query variation found this result
+    ranking_status: str = "ranked"  # "ranked", "unranked", "failed"
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -41,6 +42,7 @@ class RankedResult:
             "validation": self.validation,
             "reasoning": self.reasoning,
             "query_variation": self.query_variation,
+            "ranking_status": self.ranking_status,
         }
 
 
@@ -172,6 +174,7 @@ Required: Return ONLY valid JSON, no other text."""
                         validation="uncertain",  # NOT invalid - LLM unavailable
                         reasoning="No LLM available for ranking - no API key",
                         query_variation=query_variations[idx] if query_variations and idx < len(query_variations) else "",
+                        ranking_status="unranked",
                     )
                     for idx, er in enumerate(sorted_records)
                 ],
@@ -232,6 +235,7 @@ Required: Return ONLY valid JSON, no other text."""
                         validation="uncertain",  # NOT invalid - LLM failed
                         reasoning="LLM call failed - no response",
                         query_variation=query_variations[idx] if query_variations and idx < len(query_variations) else "",
+                        ranking_status="unranked",
                     )
                     for idx, er in enumerate(sorted_records)
                 ],
@@ -265,6 +269,7 @@ Required: Return ONLY valid JSON, no other text."""
                         validation="uncertain",  # NOT invalid - parsing failed
                         reasoning=f"Ranking parse failed: {e}",
                         query_variation=query_variations[idx] if query_variations and idx < len(query_variations) else "",
+                        ranking_status="unranked",
                     )
                     for idx, er in enumerate(sorted_records)
                 ],
@@ -295,17 +300,11 @@ Required: Return ONLY valid JSON, no other text."""
             return []
         
         if not self.api_key:
-            # Without LLM, use deterministic fallback
-            # Only select records that have non-zero scores (explicitly ranked)
-            # Records with score 0.0 (LLM unavailable) should not be selected
-            sorted_results = sorted(
-                ranking_result.ranked_results,
-                key=lambda r: r.rank_score,
-                reverse=True
-            )
-            # Filter out records with 0.0 score (LLM unavailable)
-            valid_results = [r for r in sorted_results if r.rank_score > 0.0]
-            return [r.evidence_record for r in valid_results[:max_results or self.max_results]]
+            # Without LLM, use deterministic fallback that preserves ALL candidates
+            # Do NOT filter out records with 0.0 score - they are unranked, not invalid
+            # Return all evidence records to preserve candidate availability
+            logger.warning("[LLM_RANKER] select_top_results: No API key, preserving all candidates without filtering")
+            return [r.evidence_record for r in ranking_result.ranked_results[:max_results or self.max_results]]
         
         # Prepare data for selection
         ranked_data = []
@@ -328,17 +327,10 @@ Required: Return ONLY valid JSON, no other text."""
         response = await self._call_llm(prompt, client=client)
         if not response:
             # DO NOT silently use fallback - explicitly log and use deterministic fallback
-            logger.warning("[LLM_RANKER] Selection LLM call failed, using deterministic fallback")
-            # Fallback to score-based selection with explicit tracking
-            sorted_results = sorted(
-                ranking_result.ranked_results,
-                key=lambda r: r.rank_score,
-                reverse=True
-            )
-            # Mark that fallback was used
-            for r in sorted_results[:max_select]:
-                r.reasoning = f"{r.reasoning} [SELECTION_FALLBACK: LLM unavailable]"
-            return [r.evidence_record for r in sorted_results[:max_select]]
+            # Preserve ALL candidates, not just those with non-zero scores
+            logger.warning("[LLM_RANKER] Selection LLM call failed, using deterministic fallback that preserves all candidates")
+            # Return all evidence records to preserve candidate availability
+            return [r.evidence_record for r in ranking_result.ranked_results[:max_select]]
         
         # Parse selection
         try:
@@ -356,17 +348,10 @@ Required: Return ONLY valid JSON, no other text."""
         except Exception as e:
             logger.error(f"[LLM_RANKER] Failed to parse selection: {e}")
             # DO NOT silently use fallback - explicitly log and use deterministic fallback
-            logger.warning("[LLM_RANKER] Selection parsing failed, using deterministic fallback")
-            # Fallback to score-based selection, but only for records with non-zero scores
-            # Records with score 0.0 (LLM unavailable) should not be selected
-            sorted_results = sorted(
-                ranking_result.ranked_results,
-                key=lambda r: r.rank_score,
-                reverse=True
-            )
-            # Filter out records with 0.0 score (LLM unavailable)
-            valid_results = [r for r in sorted_results if r.rank_score > 0.0]
-            return [r.evidence_record for r in valid_results[:max_select]]
+            # Preserve ALL candidates, not just those with non-zero scores
+            logger.warning("[LLM_RANKER] Selection parsing failed, using deterministic fallback that preserves all candidates")
+            # Return all evidence records to preserve candidate availability
+            return [r.evidence_record for r in ranking_result.ranked_results[:max_select]]
     
     def _parse_rankings(
         self,
@@ -407,6 +392,10 @@ Required: Return ONLY valid JSON, no other text."""
             # Sort by rank score
             ranked_results.sort(key=lambda r: r.rank_score, reverse=True)
             
+            # Mark all as ranked
+            for rr in ranked_results:
+                rr.ranking_status = "ranked"
+            
             # Separate top and rejected
             top_results = [
                 r for r in ranked_results
@@ -437,6 +426,7 @@ Required: Return ONLY valid JSON, no other text."""
                         validation="uncertain",
                         reasoning=f"Parse error: {e}",
                         query_variation=query_variations[idx] if query_variations and idx < len(query_variations) else "",
+                        ranking_status="unranked",
                     )
                     for idx, er in enumerate(sorted_records)
                 ],

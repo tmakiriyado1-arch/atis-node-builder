@@ -487,6 +487,7 @@ class SearchOrchestrator:
         
         # Phase 5a: Relevance filtering (if enabled)
         # Filter out irrelevant evidence using LLM
+        # Preserve unclassified evidence (LLM failures) for downstream processing
         if self.use_relevance_filtering and self.relevance_filter and final_evidence:
             logger.info(f"[ORCHESTRATOR] Filtering {len(final_evidence)} evidence items for relevance to '{query[:50]}'")
             try:
@@ -496,15 +497,18 @@ class SearchOrchestrator:
                 )
                 self._relevance_filter_result = relevance_result
                 
-                # Use only relevant evidence for downstream processing
-                final_evidence = relevance_result.relevant_evidence
+                # Use relevant evidence + unclassified evidence for downstream processing
+                # Unclassified evidence (from LLM failures) must NOT be discarded
+                final_evidence = relevance_result.relevant_evidence + relevance_result.unclassified_evidence
                 
-                logger.info(f"[ORCHESTRATOR] Relevance filtering: kept {len(final_evidence)}/{len(relevance_result.relevant_evidence) + len(relevance_result.irrelevant_evidence)} evidence items")
+                logger.info(f"[ORCHESTRATOR] Relevance filtering: kept {len(relevance_result.relevant_evidence)} relevant + {len(relevance_result.unclassified_evidence)} unclassified from {len(final_evidence)} total")
                 
-                # Log filtered out items
+                # Log filtered out items (only truly irrelevant)
                 for result in relevance_result.results:
-                    if not result.relevant:
+                    if not result.relevant and result.classification_status == "classified":
                         logger.info(f"[ORCHESTRATOR] Filtered out: {result.url[:80]} - {result.reason}")
+                    elif result.classification_status == "unclassified":
+                        logger.warning(f"[ORCHESTRATOR] Unclassified (LLM failure): {result.url[:80]} - {result.reason}")
                         
             except Exception as e:
                 logger.warning(f"[ORCHESTRATOR] Relevance filtering failed: {e}, continuing with all evidence")

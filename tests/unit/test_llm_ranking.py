@@ -221,6 +221,91 @@ class TestLLMRankingWithMock:
         assert selected[0].url == "https://example.com/1"
     
     @pytest.mark.asyncio
+    async def test_select_top_results_preserves_unranked_candidates(self):
+        """Regression test: select_top_results must preserve candidates when LLM is unavailable.
+        
+        When ranking_result contains unranked results (rank_score=0.0, ranking_status="unranked"),
+        select_top_results must NOT filter them out. All candidates must remain available.
+        """
+        ranker = LLMRanker(api_key=None)
+        
+        evidence = [
+            EvidenceRecord(url="https://example.com/1", title="Test 1", snippet="Test"),
+            EvidenceRecord(url="https://example.com/2", title="Test 2", snippet="Test"),
+            EvidenceRecord(url="https://example.com/3", title="Test 3", snippet="Test"),
+        ]
+        
+        # Create ranking result with unranked results (LLM unavailable)
+        ranking_result = RankingResult(
+            ranked_results=[
+                RankedResult(
+                    evidence_record=evidence[0],
+                    rank_score=0.0,
+                    relevance="unknown",
+                    validation="uncertain",
+                    reasoning="No LLM available for ranking - no API key",
+                    query_variation="",
+                    ranking_status="unranked",
+                ),
+                RankedResult(
+                    evidence_record=evidence[1],
+                    rank_score=0.0,
+                    relevance="unknown",
+                    validation="uncertain",
+                    reasoning="No LLM available for ranking - no API key",
+                    query_variation="",
+                    ranking_status="unranked",
+                ),
+                RankedResult(
+                    evidence_record=evidence[2],
+                    rank_score=0.0,
+                    relevance="unknown",
+                    validation="uncertain",
+                    reasoning="No LLM available for ranking - no API key",
+                    query_variation="",
+                    ranking_status="unranked",
+                ),
+            ],
+        )
+        
+        selected = await ranker.select_top_results(
+            ranking_result,
+            "Test Entity",
+            max_results=10,
+        )
+        
+        # All candidates must be preserved, even with 0.0 scores
+        assert len(selected) == 3, f"Expected 3 candidates, got {len(selected)} - unranked candidates were incorrectly filtered"
+        selected_urls = {e.url for e in selected}
+        assert selected_urls == {"https://example.com/1", "https://example.com/2", "https://example.com/3"}
+    
+    @pytest.mark.asyncio
+    async def test_no_api_key_returns_unranked_not_irrelevant(self):
+        """Regression test: When no API key, rank_results must return unranked results, not mark all as irrelevant."""
+        ranker = LLMRanker(api_key=None)
+        
+        evidence = [
+            EvidenceRecord(url="https://example.com/1", title="Test 1", snippet="Test"),
+            EvidenceRecord(url="https://example.com/2", title="Test 2", snippet="Test"),
+        ]
+        
+        result = await ranker.rank_results(
+            "Test Entity",
+            evidence,
+            ["query1"],
+            {},
+        )
+        
+        # Should return all results with unranked status
+        assert len(result.ranked_results) == 2
+        assert len(result.top_results) == 0  # No top results without LLM
+        for ranked in result.ranked_results:
+            assert ranked.rank_score == 0.0
+            assert ranked.relevance == "unknown"
+            assert ranked.validation == "uncertain"
+            assert ranked.ranking_status == "unranked"
+    
+    @pytest.mark.asyncio
     async def test_rank_with_mock_client(self):
         """Test ranking with mocked HTTP client."""
         import httpx
@@ -294,6 +379,7 @@ class TestLLMRankingEdgeCases:
         # Should return default ranking
         assert len(result.ranked_results) == 1
         assert result.ranked_results[0].rank_score == 0.0
+        assert result.ranked_results[0].ranking_status == "unranked"
     
     @pytest.mark.asyncio
     async def test_rank_with_http_error(self):
@@ -322,6 +408,7 @@ class TestLLMRankingEdgeCases:
         # Should return default ranking
         assert len(result.ranked_results) == 1
         assert result.ranked_results[0].rank_score == 0.0
+        assert result.ranked_results[0].ranking_status == "unranked"
     
     def test_parse_rankings_with_code_block(self):
         """Test parsing rankings from code block response."""
