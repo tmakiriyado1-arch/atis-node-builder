@@ -22,6 +22,15 @@ from app.services.research.query_variation import QueryVariation, QueryVariation
 from app.services.research.search_provider import ProviderRole, SearchProvider, SearchResult
 from app.services.research.relevance_filter import RelevanceFilter, RelevanceFilterResult
 from app.logging_config import logger
+from app.services.diagnostic_logging import (
+    get_diagnostic_logger,
+    PipelineStage,
+    StageStatus,
+    FailureCategory,
+    generate_run_id,
+    redact_url,
+    StageAccounting,
+)
 
 
 def _get_elapsed_ms(start_time: float) -> int:
@@ -201,6 +210,7 @@ class SearchOrchestrator:
         query: str,
         context: Optional[Dict[str, Any]] = None,
         max_results: int = 10,
+        run_id: Optional[str] = None,
     ) -> OrchestratorResult:
         """Search across all providers, collect first-page results, crawl all URLs, extract evidence.
         
@@ -215,17 +225,28 @@ class SearchOrchestrator:
             query: The search query
             context: Optional context for query expansion and metadata propagation
             max_results: Maximum results per provider (first page limit)
+            run_id: Optional run ID for diagnostic correlation
             
         Returns:
             OrchestratorResult with combined evidence, crawl metrics, and status
         """
+        # Get diagnostic logger with run ID
+        diag_logger = get_diagnostic_logger(run_id) if run_id else logger
+        
+        # Initialize accounting
+        accounting = StageAccounting()
+        
         if not self.providers:
+            diag_logger.error(f"[STAGE B] [ORCHESTRATOR] No search providers configured")
             return OrchestratorResult(
                 status=ResearchStatus.UNAVAILABLE,
                 error_message="No search providers configured",
             )
 
-        logger.info(f"[ORCHESTRATOR] Starting search for '{query[:100]}' with {len(self.providers)} providers")
+        # Log Stage B start with diagnostic info
+        safe_query = query[:100] if query else ""
+        diag_logger.info(f"[STAGE B] Search: STARTED query='{safe_query}' providers={len(self.providers)}")
+        accounting.record("B_input", 0, len(self.providers))
         
         # Generate query variations for broader discovery
         query_variations = self.query_variation_generator.generate(
@@ -235,7 +256,8 @@ class SearchOrchestrator:
             country=context.get("country") if context else None,
         )
         
-        logger.info(f"[ORCHESTRATOR] Generated {len(query_variations)} query variations")
+        diag_logger.info(f"[STAGE B] Query variations: count={len(query_variations)}")
+        accounting.record("B_variations", len(query_variations), len(query_variations))
         
         # Phase 1: Collect first-page results from all providers
         # Split into phases for proper sequencing:
@@ -265,7 +287,7 @@ class SearchOrchestrator:
             else:
                 phase2_providers.append(provider)
         
-        logger.info(f"[ORCHESTRATOR] Phase 1a: Running {len(phase1a_providers)} identity/reference providers")
+        diag_logger.info(f"[STAGE B] Phase 1a: identity/reference providers count={len(phase1a_providers)}")
         
         # Phase 1a: Run IDENTITY and REFERENCE providers to discover metadata like official_website
         for i in range(0, len(phase1a_providers), self.max_concurrent_providers):
