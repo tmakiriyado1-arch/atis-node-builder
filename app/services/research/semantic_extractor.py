@@ -796,17 +796,45 @@ Ontology Rules:
                 logger.warning(f"[SEMANTIC_EXTRACTION] Item {item_idx}: Skipping - empty passage")
                 continue
             
+            # Skip if no passage (required)
+            if not passage:
+                logger.warning(f"[SEMANTIC_EXTRACTION] Item {item_idx}: Skipping - empty passage")
+                continue
+            
+            # Validate passage is in document text (conservative)
+            # The passage must appear in the document's normalized_text
+            document_text = document.normalized_text or document.content or ""
+            if passage and passage.strip() and document_text:
+                if passage.strip() not in document_text:
+                    logger.info(f"[SEMANTIC_EXTRACTION] Item {item_idx}: Skipping - passage not found in document text")
+                    continue
+            
             # Skip if subject doesn't match entity (conservative)
             # Allow partial matches for acronyms, etc.
+            # Also check if subject appears in entity_name (alias matching)
             if entity_name and entity_name.strip():
                 normalized_entity = entity_name.strip().lower()
-                if normalized_entity not in subject.lower():
-                    # Check if the passage contains the entity
-                    if normalized_entity not in passage.lower():
-                        logger.info(f"[SEMANTIC_EXTRACTION] Item {item_idx}: Skipping - entity '{normalized_entity}' not in subject or passage")
-                        continue
+                normalized_subject = subject.lower()
+                normalized_passage = passage.lower()
+                
+                # Check if entity name is in subject or passage (direct match)
+                entity_in_subject_or_passage = (
+                    normalized_entity in normalized_subject or
+                    normalized_entity in normalized_passage
+                )
+                
+                # Check if subject is in entity name (alias match)
+                # e.g., subject="ZERA", entity_name="Zimbabwe Energy Regulatory Authority (ZERA)"
+                subject_in_entity = normalized_subject in normalized_entity
+                
+                if not entity_in_subject_or_passage and not subject_in_entity:
+                    logger.info(f"[SEMANTIC_EXTRACTION] Item {item_idx}: Skipping - entity '{normalized_entity}' not in subject/passage and subject '{normalized_subject}' not in entity")
+                    continue
                 else:
-                    logger.info(f"[SEMANTIC_EXTRACTION] Item {item_idx}: Entity match found in subject")
+                    if entity_in_subject_or_passage:
+                        logger.info(f"[SEMANTIC_EXTRACTION] Item {item_idx}: Entity match found in subject or passage")
+                    else:
+                        logger.info(f"[SEMANTIC_EXTRACTION] Item {item_idx}: Alias match found (subject in entity_name)")
             
             # Validate predicate against ontology
             ontology = get_ontology()

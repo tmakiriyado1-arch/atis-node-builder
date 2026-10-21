@@ -127,6 +127,13 @@ def normalize_mistral_content(
             # Concatenate text parts with newlines to preserve ordering
             result = '\n'.join(text_parts)
             logger.info(f"[MISTRAL_RESPONSE {context}] LLM_NORMALIZED_TEXT_LENGTH={len(result)}")
+            # If we have reasoning blocks mixed with text, try to extract only the text block
+            # that contains JSON for better JSON parsing
+            text_only_parts = [p for p in text_parts if p.strip().startswith('{') or p.strip().startswith('[')]
+            if text_only_parts:
+                # Return only the JSON-containing parts for better parsing
+                result = '\n'.join(text_only_parts)
+                logger.info(f"[MISTRAL_RESPONSE {context}] LLM_EXTRACTED_JSON_PARTS count={len(text_only_parts)}")
             return result
         else:
             # No text could be extracted from list items
