@@ -3,13 +3,23 @@
 This module provides functionality to crawl web pages and extract their content
 for use as research evidence. It handles HTML pages and can be extended to support
 other content types (PDF, documents, etc.).
+
+Key improvements:
+- Streaming HTTP retrieval with bounded content length enforcement
+- Proper HTTP status classification with raise_for_status()
+- Consistent error handling with proper RetrievalStatus/ExtractionQuality/EvidenceStatus
+- HTTP client lifecycle management with connection reuse
+- Enhanced timeout policy with explicit connect/read/write/pool timeouts
+- Better diagnostic logging with failure phase identification
 """
 from __future__ import annotations
 
+import asyncio
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import urljoin, urlparse, urlunparse
 
 import httpx
@@ -39,6 +49,17 @@ _NON_CONTENT_EXTENSIONS = {
     ".woff", ".woff2", ".ttf", ".eot", ".mp3", ".mp4", ".avi",
     ".mov", ".wmv", ".flv", ".zip", ".tar", ".gz", ".rar",
 }
+
+# Default timeout configuration
+DEFAULT_TIMEOUT_CONFIG = httpx.Timeout(
+    connect=5.0,
+    read=10.0,
+    write=5.0,
+    pool=5.0,
+)
+
+# Maximum content length to stream (100KB)
+DEFAULT_MAX_CONTENT_LENGTH = 100000
 
 
 @dataclass
@@ -79,24 +100,156 @@ class PageCrawler:
     - Preserve provenance (source URL, final URL, discovery metadata)
     - Handle failures gracefully without stopping other crawls
     - Normalize URLs to avoid duplicate crawling
+    - Use streaming to enforce content length limits during download
+    
+    Key architectural decisions:
+    - HTTP client is created per crawl_url() call for backward compatibility
+    - For multi-URL crawling (crawl_urls), a single client is reused across all URLs
+    - Content length is enforced during streaming, not after buffering
+    - HTTP status codes are explicitly checked with raise_for_status()
+    - All failure paths set consistent retrieval_status, extraction_quality, and evidence_status
     """
 
     def __init__(
         self,
         timeout: float = 15.0,
-        max_content_length: int = 100000,  # 100KB max per page
+        max_content_length: int = DEFAULT_MAX_CONTENT_LENGTH,
         user_agent: str = "Mozilla/5.0 (compatible; NORAResearchBot/1.0; +https://github.com/tmakiriyado1-arch/atis-node-builder)",
         max_concurrent: int = 5,
     ) -> None:
+        """Initialize the page crawler.
+        
+        Args:
+            timeout: Overall timeout for requests (used as default for all timeout components)
+            max_content_length: Maximum bytes to download per page
+            user_agent: User-Agent string for HTTP requests
+            max_concurrent: Maximum concurrent crawls
+        """
         self.timeout = timeout
         self.max_content_length = max_content_length
         self.user_agent = user_agent
         self.max_concurrent = max_concurrent
+        
+        # Build timeout config from single timeout value for backward compatibility
+        self.timeout_config = httpx.Timeout(
+            connect=min(timeout, 5.0),
+            read=min(timeout, 10.0),
+            write=min(timeout, 5.0),
+            pool=min(timeout, 5.0),
+        )
+        
+        # Overall per-URL deadline (covers entire request lifecycle)
+        self.overall_timeout = timeout
+        
         self.headers = {
             "User-Agent": user_agent,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.5",
         }
+
+    async def _fetch_with_streaming(
+        self,
+        client: httpx.AsyncClient,
+        url: str,
+    ) -> Tuple[httpx.Response, str, int, bool]:
+        """Fetch URL with streaming and enforce content length limit.
+        
+        This method:
+        1. Sends the request and gets the response headers
+        2. Checks Content-Length header if present and rejects if too large
+        3. Streams the response body while enforcing the byte limit
+        4. Returns (response, content, bytes_received, was_truncated)
+        
+        Args:
+            client: HTTPX async client
+            url: URL to fetch
+            
+        Returns:
+            Tuple of (response, content, bytes_received, was_truncated)
+            
+        Raises:
+            httpx.HTTPStatusError: If HTTP status is not 2xx
+            httpx.TimeoutException: If timeout occurs
+            httpx.ConnectError: If connection fails
+            ValueError: If Content-Length exceeds limit before streaming
+        """
+        start_time = time.monotonic()
+        
+        # Send request to get headers
+        response = await client.send(
+            httpx.Request("GET", url, headers=self.headers),
+            stream=True,
+        )
+        
+        # Check for HTTP errors explicitly
+        # This will raise httpx.HTTPStatusError for 4xx/5xx responses
+        response.raise_for_status()
+        
+        # Get final URL after redirects
+        final_url = str(response.url)
+        status_code = response.status_code
+        content_type = response.headers.get("Content-Type", "").lower()
+        
+        # Check Content-Length header first
+        content_length_header = response.headers.get("Content-Length")
+        if content_length_header is not None:
+            try:
+                content_length = int(content_length_header)
+                if content_length > self.max_content_length:
+                    # Reject before reading body - header indicates it's too large
+                    logger.warning(
+                        f"[PAGE_CRAWLER] Content-Length {content_length} exceeds limit {self.max_content_length} for {url}"
+                    )
+                    return response, "", 0, True
+            except (ValueError, TypeError):
+                # Invalid Content-Length header, continue with streaming
+                pass
+        
+        # Stream the response with byte limit
+        content_bytes = b""
+        bytes_received = 0
+        was_truncated = False
+        
+        async for chunk in response.aiter_bytes():
+            if bytes_received >= self.max_content_length:
+                was_truncated = True
+                break
+            
+            content_bytes += chunk
+            bytes_received += len(chunk)
+            
+            if bytes_received >= self.max_content_length:
+                was_truncated = True
+                break
+        
+        # Decode content using HTTPX's response encoding behavior
+        # Try to get encoding from response
+        encoding = response.encoding
+        if encoding is None:
+            # Try to detect from content-type header
+            charset = response.headers.get("Content-Type", "")
+            if "charset=" in charset.lower():
+                encoding = charset.split("charset=")[1].split(";")[0].strip()
+            else:
+                encoding = "utf-8"
+        
+        try:
+            content = content_bytes.decode(encoding, errors="replace")
+        except (UnicodeDecodeError, LookupError):
+            # Fallback to utf-8 with replace
+            try:
+                content = content_bytes.decode("utf-8", errors="replace")
+            except Exception:
+                content = content_bytes.decode("latin-1", errors="replace")
+        
+        elapsed_ms = (time.monotonic() - start_time) * 1000
+        logger.debug(
+            f"[PAGE_CRAWLER] Fetched {url} -> {final_url} "
+            f"status={status_code} bytes={bytes_received} "
+            f"truncated={was_truncated} elapsed_ms={elapsed_ms:.0f}"
+        )
+        
+        return response, content, bytes_received, was_truncated
 
     async def crawl_url(
         self,
@@ -131,102 +284,209 @@ class PageCrawler:
                 evidence_status=EvidenceStatus.UNUSABLE,
             )
         
+        # Create a new HTTP client for this single URL crawl
+        # This ensures proper cleanup and isolation
         try:
+            start_time = time.monotonic()
+            
             async with httpx.AsyncClient(
                 headers=self.headers,
-                timeout=self.timeout,
+                timeout=self.timeout_config,
                 follow_redirects=True,
                 limits=httpx.Limits(max_keepalive_connections=10, max_connections=20),
             ) as client:
-                response = await client.get(normalized_url)
-                
-                # Get final URL after redirects
-                final_url = str(response.url)
-                status_code = response.status_code
-                content_type = response.headers.get("Content-Type", "").lower()
-                
-                # Check if we should process this content type
-                if not self._should_crawl_content_type(content_type):
-                    return CrawlResult(
-                        url=url,
-                        final_url=final_url,
-                        status_code=status_code,
-                        success=False,
-                        content="",
-                        content_type=content_type,
-                        title="",
-                        error=f"Unsupported content type: {content_type}",
-                        metadata=discovery_metadata or {},
+                try:
+                    # Use overall timeout wrapper
+                    response, raw_content, bytes_received, was_truncated = await asyncio.wait_for(
+                        self._fetch_with_streaming(client, normalized_url),
+                        timeout=self.overall_timeout,
                     )
-                
-                # Check for non-content URLs (images, etc.)
-                if self._is_non_content_url(final_url):
+                    
+                    # Get final URL and status from response
+                    final_url = str(response.url)
+                    status_code = response.status_code
+                    content_type = response.headers.get("Content-Type", "").lower()
+                    
+                    elapsed_ms = (time.monotonic() - start_time) * 1000
+                    
+                    # Check if we should process this content type
+                    if not self._should_crawl_content_type(content_type):
+                        logger.info(
+                            f"[PAGE_CRAWLER] Rejected content type {content_type} for {url} "
+                            f"elapsed_ms={elapsed_ms:.0f}"
+                        )
+                        return CrawlResult(
+                            url=url,
+                            final_url=final_url,
+                            status_code=status_code,
+                            success=False,
+                            content="",
+                            content_type=content_type,
+                            title="",
+                            error=f"Unsupported content type: {content_type}",
+                            metadata=discovery_metadata or {},
+                            retrieval_status=RetrievalStatus.CONTENT_TYPE_REJECTED,
+                            extraction_quality=ExtractionQuality.EMPTY,
+                            evidence_status=EvidenceStatus.UNUSABLE,
+                        )
+                    
+                    # Check for non-content URLs (images, etc.)
+                    if self._is_non_content_url(final_url):
+                        logger.info(
+                            f"[PAGE_CRAWLER] Rejected non-content URL {final_url} "
+                            f"elapsed_ms={elapsed_ms:.0f}"
+                        )
+                        return CrawlResult(
+                            url=url,
+                            final_url=final_url,
+                            status_code=status_code,
+                            success=False,
+                            content="",
+                            content_type=content_type,
+                            title="",
+                            error="Non-content URL (image, stylesheet, etc.)",
+                            metadata=discovery_metadata or {},
+                            retrieval_status=RetrievalStatus.CONTENT_TYPE_REJECTED,
+                            extraction_quality=ExtractionQuality.EMPTY,
+                            evidence_status=EvidenceStatus.UNUSABLE,
+                        )
+                    
+                    # Check if content was truncated due to size limit
+                    if was_truncated and not raw_content:
+                        # Content-Length exceeded limit before streaming
+                        logger.warning(
+                            f"[PAGE_CRAWLER] Content-Length exceeded limit for {url} "
+                            f"elapsed_ms={elapsed_ms:.0f}"
+                        )
+                        return CrawlResult(
+                            url=url,
+                            final_url=final_url,
+                            status_code=status_code,
+                            success=False,
+                            content="",
+                            content_type=content_type,
+                            title="",
+                            error=f"Content too large: Content-Length exceeds {self.max_content_length} bytes",
+                            metadata=discovery_metadata or {},
+                            retrieval_status=RetrievalStatus.CONTENT_TYPE_REJECTED,
+                            extraction_quality=ExtractionQuality.EMPTY,
+                            evidence_status=EvidenceStatus.UNUSABLE,
+                        )
+                    
+                    # Check if we have any content at all
+                    if not raw_content:
+                        logger.warning(
+                            f"[PAGE_CRAWLER] Empty content received for {url} "
+                            f"status={status_code} elapsed_ms={elapsed_ms:.0f}"
+                        )
+                        return CrawlResult(
+                            url=url,
+                            final_url=final_url,
+                            status_code=status_code,
+                            success=False,
+                            content="",
+                            content_type=content_type,
+                            title="",
+                            error="Empty response body",
+                            metadata=discovery_metadata or {},
+                            retrieval_status=RetrievalStatus.HTTP_ERROR,
+                            extraction_quality=ExtractionQuality.EMPTY,
+                            evidence_status=EvidenceStatus.UNUSABLE,
+                        )
+                    
+                    # Extract title and content
+                    title, content, html_content = self._extract_content(
+                        raw_content, content_type, final_url
+                    )
+                    
+                    # Classify extraction quality
+                    extraction_quality = classify_extraction_quality(
+                        content, 
+                        html_content if html_content else raw_content,
+                        final_url,
+                        status_code
+                    )
+                    
+                    # For HTTP success (2xx), mark as success
+                    # For 4xx/5xx, we would have raised HTTPStatusError above
+                    # So if we get here with a response, it's a 2xx status
+                    retrieval_status = RetrievalStatus.SUCCESS
+                    
+                    # Classify evidence status
+                    evidence_status = classify_evidence_status(
+                        extraction_quality,
+                        retrieval_status
+                    )
+                    
+                    # Log size limit truncation if it happened
+                    if was_truncated:
+                        logger.info(
+                            f"[PAGE_CRAWLER] Content truncated to {self.max_content_length} bytes for {url} "
+                            f"elapsed_ms={elapsed_ms:.0f}"
+                        )
+                        # Add metadata about truncation
+                        metadata = (discovery_metadata or {}).copy()
+                        metadata["content_truncated"] = True
+                        metadata["bytes_received"] = bytes_received
+                        metadata["max_content_length"] = self.max_content_length
+                        
+                        return CrawlResult(
+                            url=url,
+                            final_url=final_url,
+                            status_code=status_code,
+                            success=True,
+                            content=content,
+                            content_type=content_type,
+                            title=title,
+                            metadata=metadata,
+                            retrieval_status=retrieval_status,
+                            extraction_quality=extraction_quality,
+                            evidence_status=evidence_status,
+                        )
+                    
                     return CrawlResult(
                         url=url,
                         final_url=final_url,
                         status_code=status_code,
+                        success=True,
+                        content=content,
+                        content_type=content_type,
+                        title=title,
+                        metadata=discovery_metadata or {},
+                        retrieval_status=retrieval_status,
+                        extraction_quality=extraction_quality,
+                        evidence_status=evidence_status,
+                    )
+                    
+                except asyncio.TimeoutError as e:
+                    elapsed_ms = (time.monotonic() - start_time) * 1000
+                    logger.error(
+                        f"[PAGE_CRAWLER] Timeout (overall deadline) crawling {url}: {e} "
+                        f"elapsed_ms={elapsed_ms:.0f}"
+                    )
+                    return CrawlResult(
+                        url=url,
+                        final_url="",
+                        status_code=0,
                         success=False,
                         content="",
-                        content_type=content_type,
+                        content_type="",
                         title="",
-                        error="Non-content URL (image, stylesheet, etc.)",
+                        error=f"Timeout after {self.overall_timeout}s: {e}",
                         metadata=discovery_metadata or {},
-                        retrieval_status=RetrievalStatus.CONTENT_TYPE_REJECTED,
+                        retrieval_status=RetrievalStatus.TIMEOUT,
                         extraction_quality=ExtractionQuality.EMPTY,
                         evidence_status=EvidenceStatus.UNUSABLE,
                     )
-                
-                # Get raw content
-                raw_content = response.text
-                
-                # Limit content size - but ensure we get at least the head section
-                if len(raw_content) > self.max_content_length:
-                    # Find </head> and <main positions to ensure we include content
-                    head_end_pos = raw_content.lower().find('</head>')
-                    main_start_pos = raw_content.lower().find('<main')
                     
-                    # If main tag exists beyond our limit, extend to include it
-                    if main_start_pos > 0 and main_start_pos > self.max_content_length:
-                        raw_content = raw_content[:max(self.max_content_length, main_start_pos + 50000)]
-                    elif head_end_pos > 0 and head_end_pos < self.max_content_length:
-                        # Extend to include </head> + some body content
-                        raw_content = raw_content[:max(self.max_content_length, head_end_pos + 1000)]
-                    else:
-                        raw_content = raw_content[:self.max_content_length]
-                
-                # Extract title and content
-                title, content, html_content = self._extract_content(raw_content, content_type, final_url)
-                
-                # Classify extraction quality
-                extraction_quality = classify_extraction_quality(
-                    content, 
-                    html_content if html_content else raw_content,
-                    final_url,
-                    status_code
-                )
-                
-                # Classify evidence status
-                evidence_status = classify_evidence_status(
-                    extraction_quality,
-                    RetrievalStatus.SUCCESS
-                )
-                
-                return CrawlResult(
-                    url=url,
-                    final_url=final_url,
-                    status_code=status_code,
-                    success=True,
-                    content=content,
-                    content_type=content_type,
-                    title=title,
-                    metadata=discovery_metadata or {},
-                    retrieval_status=RetrievalStatus.SUCCESS,
-                    extraction_quality=extraction_quality,
-                    evidence_status=evidence_status,
-                )
-                
         except httpx.TimeoutException as e:
-            logger.error(f"[PAGE_CRAWLER] Timeout crawling {url}: {e}")
+            elapsed_ms = (time.monotonic() - start_time) * 1000
+            # Determine which phase timed out
+            timeout_type = type(e).__name__
+            logger.error(
+                f"[PAGE_CRAWLER] HTTPX timeout ({timeout_type}) crawling {url}: {e} "
+                f"elapsed_ms={elapsed_ms:.0f}"
+            )
             return CrawlResult(
                 url=url,
                 final_url="",
@@ -235,7 +495,7 @@ class PageCrawler:
                 content="",
                 content_type="",
                 title="",
-                error=f"Timeout: {e}",
+                error=f"HTTPX timeout ({timeout_type}): {e}",
                 metadata=discovery_metadata or {},
                 retrieval_status=RetrievalStatus.TIMEOUT,
                 extraction_quality=ExtractionQuality.EMPTY,
@@ -243,11 +503,16 @@ class PageCrawler:
             )
             
         except httpx.HTTPStatusError as e:
-            logger.error(f"[PAGE_CRAWLER] HTTP error crawling {url}: {e.response.status_code}")
+            elapsed_ms = (time.monotonic() - start_time) * 1000
             status_code = e.response.status_code if e.response else 0
+            final_url = str(e.response.url) if e.response else ""
+            logger.error(
+                f"[PAGE_CRAWLER] HTTP {status_code} crawling {url}: "
+                f"final_url={final_url} elapsed_ms={elapsed_ms:.0f}"
+            )
             return CrawlResult(
                 url=url,
-                final_url=str(e.response.url) if e.response else "",
+                final_url=final_url,
                 status_code=status_code,
                 success=False,
                 content="",
@@ -261,7 +526,11 @@ class PageCrawler:
             )
             
         except httpx.ConnectError as e:
-            logger.error(f"[PAGE_CRAWLER] Connection error crawling {url}: {e}")
+            elapsed_ms = (time.monotonic() - start_time) * 1000
+            logger.error(
+                f"[PAGE_CRAWLER] Connection error crawling {url}: {e} "
+                f"elapsed_ms={elapsed_ms:.0f}"
+            )
             return CrawlResult(
                 url=url,
                 final_url="",
@@ -277,8 +546,45 @@ class PageCrawler:
                 evidence_status=EvidenceStatus.UNUSABLE,
             )
             
-        except Exception as e:
-            logger.error(f"[PAGE_CRAWLER] Error crawling {url}: {e}")
+        except httpx.RequestError as e:
+            # Catch other HTTPX request errors (e.g., TooManyRedirects)
+            elapsed_ms = (time.monotonic() - start_time) * 1000
+            error_type = type(e).__name__
+            logger.error(
+                f"[PAGE_CRAWLER] Request error ({error_type}) crawling {url}: {e} "
+                f"elapsed_ms={elapsed_ms:.0f}"
+            )
+            
+            # Check for redirect loop
+            if "redirect" in error_type.lower() or "too many redirects" in str(e).lower():
+                retrieval_status = RetrievalStatus.REDIRECT_LOOP
+            else:
+                retrieval_status = RetrievalStatus.CONNECTION_ERROR
+                
+            return CrawlResult(
+                url=url,
+                final_url="",
+                status_code=0,
+                success=False,
+                content="",
+                content_type="",
+                title="",
+                error=f"{error_type}: {e}",
+                metadata=discovery_metadata or {},
+                retrieval_status=retrieval_status,
+                extraction_quality=ExtractionQuality.EMPTY,
+                evidence_status=EvidenceStatus.UNUSABLE,
+            )
+            
+        except ValueError as e:
+            # URL validation errors, etc.
+            elapsed_ms = (time.monotonic() - start_time) * 1000
+            logger.error(
+                f"[PAGE_CRAWLER] Value error crawling {url}: {e} "
+                f"elapsed_ms={elapsed_ms:.0f}"
+            )
+            # ValueError could be from URL parsing or other validation
+            # Classify as HTTP_ERROR to distinguish from connection failures
             return CrawlResult(
                 url=url,
                 final_url="",
@@ -289,7 +595,31 @@ class PageCrawler:
                 title="",
                 error=str(e),
                 metadata=discovery_metadata or {},
-                retrieval_status=RetrievalStatus.CONNECTION_ERROR,
+                retrieval_status=RetrievalStatus.HTTP_ERROR,
+                extraction_quality=ExtractionQuality.EMPTY,
+                evidence_status=EvidenceStatus.UNUSABLE,
+            )
+            
+        except Exception as e:
+            elapsed_ms = (time.monotonic() - start_time) * 1000
+            error_type = type(e).__name__
+            logger.error(
+                f"[PAGE_CRAWLER] Unexpected error ({error_type}) crawling {url}: {e} "
+                f"elapsed_ms={elapsed_ms:.0f}"
+            )
+            # Do NOT classify as connection error - this could be parsing, programming, etc.
+            # Use a generic error status but NOT CONNECTION_ERROR
+            return CrawlResult(
+                url=url,
+                final_url="",
+                status_code=0,
+                success=False,
+                content="",
+                content_type="",
+                title="",
+                error=f"{error_type}: {e}",
+                metadata=discovery_metadata or {},
+                retrieval_status=RetrievalStatus.HTTP_ERROR,  # Generic error for unexpected exceptions
                 extraction_quality=ExtractionQuality.EMPTY,
                 evidence_status=EvidenceStatus.UNUSABLE,
             )
@@ -299,7 +629,13 @@ class PageCrawler:
         urls: List[str],
         discovery_metadata_map: Optional[Dict[str, Dict[str, Any]]] = None,
     ) -> List[CrawlResult]:
-        """Crawl multiple URLs concurrently.
+        """Crawl multiple URLs concurrently with connection reuse.
+        
+        This method:
+        - Creates a single HTTPX client for all URLs to reuse connections
+        - Processes URLs in batches to limit concurrency
+        - Ensures failures of individual URLs don't stop other crawls
+        - Properly cleans up the HTTP client
         
         Args:
             urls: List of URLs to crawl
@@ -308,30 +644,385 @@ class PageCrawler:
         Returns:
             List of CrawlResults in the same order as input URLs
         """
-        import asyncio
+        if not urls:
+            return []
         
         results = []
         
-        # Process in batches to limit concurrency
-        for i in range(0, len(urls), self.max_concurrent):
-            batch = urls[i:i + self.max_concurrent]
+        # Create a single HTTP client for all URLs to reuse connections
+        async with httpx.AsyncClient(
+            headers=self.headers,
+            timeout=self.timeout_config,
+            follow_redirects=True,
+            limits=httpx.Limits(max_keepalive_connections=10, max_connections=20),
+        ) as shared_client:
             
-            # Get metadata for each URL in batch
-            batch_metadata = {}
-            if discovery_metadata_map:
+            # Process in batches to limit concurrency
+            for i in range(0, len(urls), self.max_concurrent):
+                batch = urls[i:i + self.max_concurrent]
+                
+                # Get metadata for each URL in batch
+                batch_metadata = {}
+                if discovery_metadata_map:
+                    for url in batch:
+                        batch_metadata[url] = discovery_metadata_map.get(url, {})
+                
+                # Create tasks for this batch
+                # Each task uses the shared client
+                batch_tasks = []
                 for url in batch:
-                    batch_metadata[url] = discovery_metadata_map.get(url, {})
-            
-            # Crawl batch concurrently
-            batch_tasks = [
-                self.crawl_url(url, batch_metadata.get(url)) 
-                for url in batch
-            ]
-            
-            batch_results = await asyncio.gather(*batch_tasks, return_exceptions=False)
-            results.extend(batch_results)
+                    metadata = batch_metadata.get(url, {})
+                    # Create a task that uses the shared client
+                    task = asyncio.create_task(
+                        self._crawl_url_with_client(
+                            shared_client, url, metadata
+                        )
+                    )
+                    batch_tasks.append(task)
+                
+                # Wait for batch to complete
+                batch_results = await asyncio.gather(
+                    *batch_tasks, 
+                    return_exceptions=False
+                )
+                results.extend(batch_results)
         
         return results
+
+    async def _crawl_url_with_client(
+        self,
+        client: httpx.AsyncClient,
+        url: str,
+        discovery_metadata: Optional[Dict[str, Any]] = None,
+    ) -> CrawlResult:
+        """Crawl a single URL using a shared HTTP client.
+        
+        This is used by crawl_urls() to reuse connections across URLs.
+        
+        Args:
+            client: Shared HTTPX async client
+            url: The URL to crawl
+            discovery_metadata: Optional metadata about how this URL was discovered
+            
+        Returns:
+            CrawlResult with the page content or failure information
+        """
+        # Normalize URL first
+        normalized_url = normalize_url(url)
+        if not normalized_url:
+            return CrawlResult(
+                url=url,
+                final_url="",
+                status_code=0,
+                success=False,
+                content="",
+                content_type="",
+                title="",
+                error="Invalid URL",
+                metadata=discovery_metadata or {},
+                retrieval_status=RetrievalStatus.CONNECTION_ERROR,
+                extraction_quality=ExtractionQuality.EMPTY,
+                evidence_status=EvidenceStatus.UNUSABLE,
+            )
+        
+        start_time = time.monotonic()
+        
+        try:
+            # Use overall timeout wrapper
+            response, raw_content, bytes_received, was_truncated = await asyncio.wait_for(
+                self._fetch_with_streaming(client, normalized_url),
+                timeout=self.overall_timeout,
+            )
+            
+            # Get final URL and status from response
+            final_url = str(response.url)
+            status_code = response.status_code
+            content_type = response.headers.get("Content-Type", "").lower()
+            
+            elapsed_ms = (time.monotonic() - start_time) * 1000
+            
+            # Check if we should process this content type
+            if not self._should_crawl_content_type(content_type):
+                logger.info(
+                    f"[PAGE_CRAWLER] Rejected content type {content_type} for {url} "
+                    f"elapsed_ms={elapsed_ms:.0f}"
+                )
+                return CrawlResult(
+                    url=url,
+                    final_url=final_url,
+                    status_code=status_code,
+                    success=False,
+                    content="",
+                    content_type=content_type,
+                    title="",
+                    error=f"Unsupported content type: {content_type}",
+                    metadata=discovery_metadata or {},
+                    retrieval_status=RetrievalStatus.CONTENT_TYPE_REJECTED,
+                    extraction_quality=ExtractionQuality.EMPTY,
+                    evidence_status=EvidenceStatus.UNUSABLE,
+                )
+            
+            # Check for non-content URLs (images, etc.)
+            if self._is_non_content_url(final_url):
+                logger.info(
+                    f"[PAGE_CRAWLER] Rejected non-content URL {final_url} "
+                    f"elapsed_ms={elapsed_ms:.0f}"
+                )
+                return CrawlResult(
+                    url=url,
+                    final_url=final_url,
+                    status_code=status_code,
+                    success=False,
+                    content="",
+                    content_type=content_type,
+                    title="",
+                    error="Non-content URL (image, stylesheet, etc.)",
+                    metadata=discovery_metadata or {},
+                    retrieval_status=RetrievalStatus.CONTENT_TYPE_REJECTED,
+                    extraction_quality=ExtractionQuality.EMPTY,
+                    evidence_status=EvidenceStatus.UNUSABLE,
+                )
+            
+            # Check if content was truncated due to size limit
+            if was_truncated and not raw_content:
+                logger.warning(
+                    f"[PAGE_CRAWLER] Content-Length exceeded limit for {url} "
+                    f"elapsed_ms={elapsed_ms:.0f}"
+                )
+                return CrawlResult(
+                    url=url,
+                    final_url=final_url,
+                    status_code=status_code,
+                    success=False,
+                    content="",
+                    content_type=content_type,
+                    title="",
+                    error=f"Content too large: Content-Length exceeds {self.max_content_length} bytes",
+                    metadata=discovery_metadata or {},
+                    retrieval_status=RetrievalStatus.CONTENT_TYPE_REJECTED,
+                    extraction_quality=ExtractionQuality.EMPTY,
+                    evidence_status=EvidenceStatus.UNUSABLE,
+                )
+            
+            # Check if we have any content at all
+            if not raw_content:
+                logger.warning(
+                    f"[PAGE_CRAWLER] Empty content received for {url} "
+                    f"status={status_code} elapsed_ms={elapsed_ms:.0f}"
+                )
+                return CrawlResult(
+                    url=url,
+                    final_url=final_url,
+                    status_code=status_code,
+                    success=False,
+                    content="",
+                    content_type=content_type,
+                    title="",
+                    error="Empty response body",
+                    metadata=discovery_metadata or {},
+                    retrieval_status=RetrievalStatus.HTTP_ERROR,
+                    extraction_quality=ExtractionQuality.EMPTY,
+                    evidence_status=EvidenceStatus.UNUSABLE,
+                )
+            
+            # Extract title and content
+            title, content, html_content = self._extract_content(
+                raw_content, content_type, final_url
+            )
+            
+            # Classify extraction quality
+            extraction_quality = classify_extraction_quality(
+                content, 
+                html_content if html_content else raw_content,
+                final_url,
+                status_code
+            )
+            
+            # For HTTP success (2xx), mark as success
+            retrieval_status = RetrievalStatus.SUCCESS
+            
+            # Classify evidence status
+            evidence_status = classify_evidence_status(
+                extraction_quality,
+                retrieval_status
+            )
+            
+            # Log size limit truncation if it happened
+            if was_truncated:
+                logger.info(
+                    f"[PAGE_CRAWLER] Content truncated to {self.max_content_length} bytes for {url} "
+                    f"elapsed_ms={elapsed_ms:.0f}"
+                )
+                metadata = (discovery_metadata or {}).copy()
+                metadata["content_truncated"] = True
+                metadata["bytes_received"] = bytes_received
+                metadata["max_content_length"] = self.max_content_length
+                
+                return CrawlResult(
+                    url=url,
+                    final_url=final_url,
+                    status_code=status_code,
+                    success=True,
+                    content=content,
+                    content_type=content_type,
+                    title=title,
+                    metadata=metadata,
+                    retrieval_status=retrieval_status,
+                    extraction_quality=extraction_quality,
+                    evidence_status=evidence_status,
+                )
+            
+            return CrawlResult(
+                url=url,
+                final_url=final_url,
+                status_code=status_code,
+                success=True,
+                content=content,
+                content_type=content_type,
+                title=title,
+                metadata=discovery_metadata or {},
+                retrieval_status=retrieval_status,
+                extraction_quality=extraction_quality,
+                evidence_status=evidence_status,
+            )
+            
+        except asyncio.TimeoutError as e:
+            elapsed_ms = (time.monotonic() - start_time) * 1000
+            logger.error(
+                f"[PAGE_CRAWLER] Timeout (overall deadline) crawling {url}: {e} "
+                f"elapsed_ms={elapsed_ms:.0f}"
+            )
+            return CrawlResult(
+                url=url,
+                final_url="",
+                status_code=0,
+                success=False,
+                content="",
+                content_type="",
+                title="",
+                error=f"Timeout after {self.overall_timeout}s: {e}",
+                metadata=discovery_metadata or {},
+                retrieval_status=RetrievalStatus.TIMEOUT,
+                extraction_quality=ExtractionQuality.EMPTY,
+                evidence_status=EvidenceStatus.UNUSABLE,
+            )
+            
+        except httpx.TimeoutException as e:
+            elapsed_ms = (time.monotonic() - start_time) * 1000
+            timeout_type = type(e).__name__
+            logger.error(
+                f"[PAGE_CRAWLER] HTTPX timeout ({timeout_type}) crawling {url}: {e} "
+                f"elapsed_ms={elapsed_ms:.0f}"
+            )
+            return CrawlResult(
+                url=url,
+                final_url="",
+                status_code=0,
+                success=False,
+                content="",
+                content_type="",
+                title="",
+                error=f"HTTPX timeout ({timeout_type}): {e}",
+                metadata=discovery_metadata or {},
+                retrieval_status=RetrievalStatus.TIMEOUT,
+                extraction_quality=ExtractionQuality.EMPTY,
+                evidence_status=EvidenceStatus.UNUSABLE,
+            )
+            
+        except httpx.HTTPStatusError as e:
+            elapsed_ms = (time.monotonic() - start_time) * 1000
+            status_code = e.response.status_code if e.response else 0
+            final_url = str(e.response.url) if e.response else ""
+            logger.error(
+                f"[PAGE_CRAWLER] HTTP {status_code} crawling {url}: "
+                f"final_url={final_url} elapsed_ms={elapsed_ms:.0f}"
+            )
+            return CrawlResult(
+                url=url,
+                final_url=final_url,
+                status_code=status_code,
+                success=False,
+                content="",
+                content_type="",
+                title="",
+                error=f"HTTP {status_code}" if status_code else "HTTP error",
+                metadata=discovery_metadata or {},
+                retrieval_status=RetrievalStatus.HTTP_ERROR,
+                extraction_quality=ExtractionQuality.EMPTY,
+                evidence_status=EvidenceStatus.UNUSABLE,
+            )
+            
+        except httpx.ConnectError as e:
+            elapsed_ms = (time.monotonic() - start_time) * 1000
+            logger.error(
+                f"[PAGE_CRAWLER] Connection error crawling {url}: {e} "
+                f"elapsed_ms={elapsed_ms:.0f}"
+            )
+            return CrawlResult(
+                url=url,
+                final_url="",
+                status_code=0,
+                success=False,
+                content="",
+                content_type="",
+                title="",
+                error=f"Connection failed: {e}",
+                metadata=discovery_metadata or {},
+                retrieval_status=RetrievalStatus.CONNECTION_ERROR,
+                extraction_quality=ExtractionQuality.EMPTY,
+                evidence_status=EvidenceStatus.UNUSABLE,
+            )
+            
+        except httpx.RequestError as e:
+            elapsed_ms = (time.monotonic() - start_time) * 1000
+            error_type = type(e).__name__
+            logger.error(
+                f"[PAGE_CRAWLER] Request error ({error_type}) crawling {url}: {e} "
+                f"elapsed_ms={elapsed_ms:.0f}"
+            )
+            
+            if "redirect" in error_type.lower() or "too many redirects" in str(e).lower():
+                retrieval_status = RetrievalStatus.REDIRECT_LOOP
+            else:
+                retrieval_status = RetrievalStatus.CONNECTION_ERROR
+                
+            return CrawlResult(
+                url=url,
+                final_url="",
+                status_code=0,
+                success=False,
+                content="",
+                content_type="",
+                title="",
+                error=f"{error_type}: {e}",
+                metadata=discovery_metadata or {},
+                retrieval_status=retrieval_status,
+                extraction_quality=ExtractionQuality.EMPTY,
+                evidence_status=EvidenceStatus.UNUSABLE,
+            )
+            
+        except Exception as e:
+            elapsed_ms = (time.monotonic() - start_time) * 1000
+            error_type = type(e).__name__
+            logger.error(
+                f"[PAGE_CRAWLER] Unexpected error ({error_type}) crawling {url}: {e} "
+                f"elapsed_ms={elapsed_ms:.0f}"
+            )
+            # Do NOT classify as connection error
+            return CrawlResult(
+                url=url,
+                final_url="",
+                status_code=0,
+                success=False,
+                content="",
+                content_type="",
+                title="",
+                error=f"{error_type}: {e}",
+                metadata=discovery_metadata or {},
+                retrieval_status=RetrievalStatus.HTTP_ERROR,
+                extraction_quality=ExtractionQuality.EMPTY,
+                evidence_status=EvidenceStatus.UNUSABLE,
+            )
 
     def _should_crawl_content_type(self, content_type: str) -> bool:
         """Check if we should attempt to crawl this content type."""
@@ -638,6 +1329,12 @@ def normalize_url(url: str) -> str:
     scheme = parsed.scheme.lower()
     netloc = parsed.netloc.lower()
     
+    # Remove default ports (80 for http, 443 for https)
+    if ':' in netloc:
+        host, port = netloc.rsplit(':', 1)
+        if (scheme == 'http' and port == '80') or (scheme == 'https' and port == '443'):
+            netloc = host
+    
     # Only handle http/https
     if scheme not in ("http", "https"):
         return url
@@ -650,6 +1347,8 @@ def normalize_url(url: str) -> str:
         # Remove trailing slash (except for root)
         if len(path) > 1 and path.endswith('/'):
             path = path.rstrip('/')
+        # Normalize to lowercase for consistency
+        path = path.lower()
     
     # Remove URL fragment
     fragment = ""
